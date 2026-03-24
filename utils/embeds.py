@@ -23,7 +23,7 @@ _HERO_CN: dict[str, str] = {
     "zarya": "查莉娅", "zenyatta": "禅雅塔",
 }
 
-_GAMEMODE_LABEL = {"competitive": "竞技比赛", "quickplay": "快速比赛"}
+_GAMEMODE_LABEL = {"all": "全部数据", "competitive": "竞技比赛", "quickplay": "快速比赛"}
 
 
 def _now() -> datetime:

@@ -84,13 +84,21 @@ class OWAPIClient:
         tag = battletag.replace("#", "-")
         base = f"{OVERFAST_API_BASE}/players/{tag}"
 
-        # Fetch all three endpoints in parallel
+        # "all" = no gamemode filter (combined stats)
+        gm_param = f"?gamemode={gamemode}" if gamemode != "all" else ""
+
+        # Fetch endpoints in parallel
         summary_task = self._get(f"{base}/summary")
-        stats_task = self._get(f"{base}/stats/summary?gamemode={gamemode}")
-        career_task = self._get(f"{base}/stats/career?gamemode={gamemode}")
-        summary_raw, stats_raw, career_raw = await asyncio.gather(
-            summary_task, stats_task, career_task
-        )
+        stats_task = self._get(f"{base}/stats/summary{gm_param}")
+        # /stats/career requires a gamemode param; skip for "all" mode
+        if gamemode != "all":
+            career_task = self._get(f"{base}/stats/career?gamemode={gamemode}")
+            summary_raw, stats_raw, career_raw = await asyncio.gather(
+                summary_task, stats_task, career_task
+            )
+        else:
+            summary_raw, stats_raw = await asyncio.gather(summary_task, stats_task)
+            career_raw = None
 
         # Check for private profile
         for raw in (summary_raw, stats_raw, career_raw):

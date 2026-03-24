@@ -18,6 +18,7 @@ class StatsCog(commands.Cog):
         mode="选择查看竞技或快速比赛数据（默认竞技）",
     )
     @app_commands.choices(mode=[
+        app_commands.Choice(name="全部数据", value="all"),
         app_commands.Choice(name="竞技比赛", value="competitive"),
         app_commands.Choice(name="快速比赛", value="quickplay"),
     ])
@@ -30,7 +31,7 @@ class StatsCog(commands.Cog):
     ) -> None:
         await interaction.response.defer()
         target = member or interaction.user
-        gamemode = mode.value if mode else "competitive"
+        gamemode = mode.value if mode else "all"
 
         player = await self.bot.db.get_player(str(target.id), str(interaction.guild_id))
         if not player:
