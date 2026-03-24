@@ -13,15 +13,24 @@ class StatsCog(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="stats", description="查看玩家的 Overwatch 2 战绩数据")
-    @app_commands.describe(member="要查询的服务器成员（留空则查询自己）")
+    @app_commands.describe(
+        member="要查询的服务器成员（留空则查询自己）",
+        mode="选择查看竞技或快速比赛数据（默认竞技）",
+    )
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="竞技比赛", value="competitive"),
+        app_commands.Choice(name="快速比赛", value="quickplay"),
+    ])
     @app_commands.guild_only()
     async def stats(
         self,
         interaction: discord.Interaction,
         member: Optional[discord.Member] = None,
+        mode: app_commands.Choice[str] = None,
     ) -> None:
         await interaction.response.defer()
         target = member or interaction.user
+        gamemode = mode.value if mode else "competitive"
 
         player = await self.bot.db.get_player(str(target.id), str(interaction.guild_id))
         if not player:
@@ -35,8 +44,8 @@ class StatsCog(commands.Cog):
             )
             return
 
-        summary = await self.bot.api.get_player_summary(player["battletag"])
-        if summary is None:
+        data = await self.bot.api.get_player_stats(player["battletag"], gamemode=gamemode)
+        if data is None:
             await interaction.followup.send(
                 embed=discord.Embed(
                     title="⚠️ 数据获取失败",
@@ -45,7 +54,7 @@ class StatsCog(commands.Cog):
                 )
             )
             return
-        if summary.get("_private"):
+        if data.get("_private"):
             await interaction.followup.send(
                 embed=discord.Embed(
                     title="🔒 主页设为私密",
@@ -55,8 +64,7 @@ class StatsCog(commands.Cog):
             )
             return
 
-        stats = await self.bot.api.get_player_stats(player["battletag"])
-        await interaction.followup.send(embed=build_stats_embed(target, summary, stats))
+        await interaction.followup.send(embed=build_stats_embed(target, data))
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -6,6 +6,25 @@ import discord
 
 from config import RANK_COLORS, RANK_EMOJIS, RANK_ORDER, ROLE_EMOJIS, ROLE_LABELS
 
+# Hero name → Chinese display name (common heroes)
+_HERO_CN: dict[str, str] = {
+    "ana": "安娜", "ashe": "艾什", "baptiste": "巴蒂斯特", "bastion": "堡垒",
+    "brigitte": "布丽吉塔", "cassidy": "卡西迪", "dva": "D.Va", "doomfist": "末日铁拳",
+    "echo": "回声", "genji": "源氏", "hanzo": "半藏", "hazard": "危境",
+    "illari": "伊拉锐", "junker-queen": "渣客女王", "junkrat": "狂鼠",
+    "juno": "朱诺", "kiriko": "雾子", "lifeweaver": "生命之梭",
+    "lucio": "卢西奥", "mauga": "毛加", "mei": "美", "mercy": "天使",
+    "moira": "莫伊拉", "orisa": "奥丽莎", "pharah": "法老之鹰",
+    "ramattra": "拉玛刹", "reaper": "死神", "reinhardt": "莱因哈特",
+    "roadhog": "路霸", "sigma": "西格玛", "sojourn": "索杰恩",
+    "soldier-76": "士兵76", "sombra": "黑影", "symmetra": "秩序之光",
+    "torbjorn": "托比昂", "tracer": "猎空", "venture": "探奇",
+    "widowmaker": "黑百合", "winston": "温斯顿", "wrecking-ball": "破坏球",
+    "zarya": "查莉娅", "zenyatta": "禅雅塔",
+}
+
+_GAMEMODE_LABEL = {"competitive": "竞技比赛", "quickplay": "快速比赛"}
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -16,8 +35,8 @@ def _best_rank(competitive: dict) -> tuple[str, int]:
     for rd in competitive.values():
         if not isinstance(rd, dict):
             continue
-        div   = rd.get("division", "Unranked")
-        tier  = rd.get("tier", 5)
+        div = rd.get("division", "Unranked")
+        tier = rd.get("tier", 5)
         score = RANK_ORDER.get(div, 0) * 10 + (6 - tier)
         if score > best_score:
             best_div, best_tier, best_score = div, tier, score
@@ -41,34 +60,56 @@ def _fmt_time(seconds: int) -> str:
     return f"{h}h {m}m" if h else f"{m}m"
 
 
+def _hero_name(key: str) -> str:
+    return _HERO_CN.get(key, key.replace("-", " ").title())
+
+
 def _embed_color(competitive: dict) -> int:
     div, _ = _best_rank(competitive)
     return RANK_COLORS.get(div, 0x4488FF)
 
 
+def _bar(pct: float, length: int = 10) -> str:
+    """Simple text progress bar."""
+    filled = round(pct / 100 * length)
+    return "▰" * filled + "▱" * (length - filled)
+
+
 # ── /stats ────────────────────────────────────────────────────────────────────
 def build_stats_embed(
     member: discord.Member,
-    summary: dict[str, Any],
-    stats: Optional[dict[str, Any]],
+    stats: dict[str, Any],
 ) -> discord.Embed:
-    comp  = summary.get("competitive") or {}
+    """Build a rich stats embed from the new get_player_stats() result."""
+    comp = stats.get("competitive") or {}
     color = _embed_color(comp)
+    gamemode = stats.get("gamemode", "competitive")
+    mode_label = _GAMEMODE_LABEL.get(gamemode, gamemode)
 
     embed = discord.Embed(
-        title=f"📊  {summary.get('username', member.display_name)} 的战绩",
+        title=f"📊  {stats.get('username', member.display_name)} 的战绩",
         color=color,
         timestamp=_now(),
     )
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-    avatar = summary.get("avatar", "")
+    avatar = stats.get("avatar", "")
     embed.set_thumbnail(url=avatar or member.display_avatar.url)
 
-    embed.add_field(name="🎮 BattleTag", value=f"`{summary.get('battletag', '—')}`", inline=True)
-    endorse = summary.get("endorsement")
-    embed.add_field(name="⭐ 信誉等级", value=f"Lv.{endorse}" if endorse else "—", inline=True)
-    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    # -- Header: BattleTag + endorsement + mode --
+    embed.add_field(
+        name="🎮 BattleTag",
+        value=f"`{stats.get('battletag', '—')}`",
+        inline=True,
+    )
+    endorse = stats.get("endorsement")
+    embed.add_field(
+        name="⭐ 信誉等级",
+        value=f"Lv.{endorse}" if endorse else "—",
+        inline=True,
+    )
+    embed.add_field(name="🎯 模式", value=f"**{mode_label}**", inline=True)
 
+    # -- Competitive ranks --
     if comp:
         lines = []
         for role in ("tank", "damage", "support"):
@@ -83,34 +124,117 @@ def build_stats_embed(
             value="\n".join(lines) if lines else "本赛季暂未参与竞技",
             inline=False,
         )
-    else:
-        embed.add_field(name="🏅 竞技段位", value="本赛季暂未参与竞技", inline=False)
 
-    if stats and not stats.get("_private"):
-        played = stats.get("games_played") or 0
-        won    = stats.get("games_won") or 0
-        wr     = won / played * 100 if played else 0
+    # -- General overview --
+    gen = stats.get("general") or {}
+    played = gen.get("games_played", 0)
+    won = gen.get("games_won", 0)
+    lost = gen.get("games_lost", 0)
+    winrate = gen.get("winrate", 0)
+    kda = gen.get("kda", 0)
+
+    if played:
         embed.add_field(
             name="🎯 总览",
             value=(
-                f"胜场: **{won}** / 场次: **{played}**\n"
-                f"胜率: **{wr:.1f}%**\n"
-                f"游戏时间: **{_fmt_time(stats.get('time_played_seconds', 0))}**"
+                f"场次: **{played}**　胜/负: **{won}**/**{lost}**\n"
+                f"胜率: **{winrate:.1f}%** {_bar(winrate)}\n"
+                f"KDA: **{kda:.2f}**\n"
+                f"游戏时间: **{_fmt_time(gen.get('time_played', 0))}**"
             ),
-            inline=True,
+            inline=False,
         )
+
+        # -- Per-game averages from stats/summary --
+        avg_elim = gen.get("avg_eliminations", 0)
+        avg_death = gen.get("avg_deaths", 0)
+        avg_dmg = gen.get("avg_damage", 0)
+        avg_heal = gen.get("avg_healing", 0)
         embed.add_field(
-            name="📈 每10分钟均值",
+            name="📈 场均数据",
             value=(
-                f"⚔️ 击杀: **{stats.get('eliminations_per_10', 0):.1f}**\n"
-                f"💀 阵亡: **{stats.get('deaths_per_10', 0):.1f}**\n"
-                f"💥 伤害: **{stats.get('damage_per_10', 0):,.0f}**\n"
-                f"💚 治疗: **{stats.get('healing_per_10', 0):,.0f}**"
+                f"⚔️ 击杀: **{avg_elim:.1f}**\n"
+                f"💀 阵亡: **{avg_death:.1f}**\n"
+                f"💥 伤害: **{avg_dmg:,.0f}**\n"
+                f"💚 治疗: **{avg_heal:,.0f}**"
             ),
             inline=True,
         )
 
-    embed.set_footer(text="数据来自 OverFast API · 仅供参考")
+    # -- Per-10-min from stats/career --
+    career = stats.get("career") or {}
+    elim10 = career.get("eliminations_per_10", 0)
+    if elim10:  # career data available
+        embed.add_field(
+            name="⏱ 每10分钟均值",
+            value=(
+                f"⚔️ 击杀: **{elim10:.1f}**\n"
+                f"💀 阵亡: **{career.get('deaths_per_10', 0):.1f}**\n"
+                f"💥 伤害: **{career.get('hero_damage_per_10', 0):,.0f}**\n"
+                f"💚 治疗: **{career.get('healing_per_10', 0):,.0f}**"
+            ),
+            inline=True,
+        )
+
+    # -- Best records --
+    elim_best = career.get("elim_best_game", 0)
+    if elim_best:
+        acc = career.get("weapon_accuracy", 0)
+        embed.add_field(
+            name="🏆 最佳记录",
+            value=(
+                f"单局最高击杀: **{elim_best}**\n"
+                f"单局最高伤害: **{career.get('damage_best_game', 0):,}**\n"
+                f"最长连杀: **{career.get('kill_streak_best', 0)}**\n"
+                f"命中率: **{acc}%**" + (
+                    f"　暴击率: **{career.get('critical_hit_accuracy', 0)}%**"
+                    if career.get("critical_hit_accuracy") else ""
+                )
+            ),
+            inline=False,
+        )
+
+    # -- Top heroes --
+    top_heroes = stats.get("top_heroes") or []
+    if top_heroes:
+        lines = []
+        for h in top_heroes[:3]:
+            name = _hero_name(h["name"])
+            hw = h.get("winrate", 0)
+            lines.append(
+                f"**{name}** — {h['games_played']}场 "
+                f"胜率{hw:.0f}% KDA {h.get('kda', 0):.1f} "
+                f"({_fmt_time(h['time_played'])})"
+            )
+        embed.add_field(
+            name="🦸 常用英雄",
+            value="\n".join(lines),
+            inline=False,
+        )
+
+    # -- Role breakdown --
+    roles = stats.get("roles") or {}
+    if roles:
+        lines = []
+        for role_key in ("tank", "damage", "support"):
+            rd = roles.get(role_key)
+            if not rd or not rd.get("games_played"):
+                continue
+            emoji = ROLE_EMOJIS.get(role_key, "")
+            label = ROLE_LABELS.get(role_key, role_key)
+            rw = rd.get("winrate", 0)
+            lines.append(
+                f"{emoji} **{label}**: {rd['games_played']}场 "
+                f"胜率{rw:.0f}% KDA {rd.get('kda', 0):.1f}"
+            )
+        if lines:
+            embed.add_field(
+                name="🎭 职责分布",
+                value="\n".join(lines),
+                inline=False,
+            )
+
+    embed.set_footer(text=f"数据来自 OverFast API · {mode_label} · 仅供参考")
     return embed
 
 
@@ -129,22 +253,22 @@ def build_leaderboard_embed(
         embed.set_thumbnail(url=guild.icon.url)
 
     MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
-    lines  = []
+    lines = []
     for i, p in enumerate(ranked[:15], 1):
-        medal    = MEDALS.get(i, f"`#{i:2d}`")
-        comp     = p.get("competitive") or {}
+        medal = MEDALS.get(i, f"`#{i:2d}`")
+        comp = p.get("competitive") or {}
         best_txt, best_score = "未定级", 0
         for role in ("damage", "tank", "support"):
             rd = comp.get(role)
             if rd:
-                div   = rd.get("division", "Unranked")
-                tier  = rd.get("tier", 5)
+                div = rd.get("division", "Unranked")
+                tier = rd.get("tier", 5)
                 score = RANK_ORDER.get(div, 0) * 10 + (6 - tier)
                 if score > best_score:
                     best_score = score
-                    best_txt   = _fmt_rank(div, tier)
+                    best_txt = _fmt_rank(div, tier)
         member = guild.get_member(int(p["discord_id"]))
-        name   = member.mention if member else f"**{p.get('username', p['battletag'].split('#')[0])}**"
+        name = member.mention if member else f"**{p.get('username', p['battletag'].split('#')[0])}**"
         lines.append(f"{medal} {name} — {best_txt}")
 
     embed.description = "\n".join(lines) or "暂无数据"
@@ -178,11 +302,11 @@ def build_id_list_embed(
     else:
         lines = []
         for acc in accounts:
-            tag   = acc["battletag"]
+            tag = acc["battletag"]
             label = acc.get("label") or ""
             is_primary = tag == primary_tag
             marker = " ⭐主账号" if is_primary else ""
-            label_txt  = f"  `{label}`" if label else ""
+            label_txt = f"  `{label}`" if label else ""
             lines.append(f"• `{tag}`{label_txt}{marker}")
         embed.description = "\n".join(lines)
 
@@ -196,7 +320,7 @@ def build_id_share_embed(
     label: Optional[str],
     summary: Optional[dict],
 ) -> discord.Embed:
-    comp  = (summary or {}).get("competitive") or {}
+    comp = (summary or {}).get("competitive") or {}
     color = _embed_color(comp) if comp else 0x4488FF
 
     embed = discord.Embed(
