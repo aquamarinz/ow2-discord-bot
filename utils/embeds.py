@@ -512,6 +512,34 @@ def _format_hero_stat(key: str, value: Any) -> Optional[str]:
 
 
 # ── /hero ─────────────────────────────────────────────────────────────────────
+def _mode_block(cd: dict, mode_label: str) -> Optional[str]:
+    """Build a compact text block for one gamemode's career stats."""
+    game = cd.get("game") or {}
+    gp = game.get("games_played", 0)
+    if not gp:
+        return None
+    avg = cd.get("average") or {}
+    best = cd.get("best") or {}
+    combat = cd.get("combat") or {}
+
+    lines = [f"**场次:** {gp}　**胜率:** {game.get('win_percentage', 0)}%"]
+
+    e10 = avg.get("eliminations_avg_per_10_min", 0)
+    d10 = avg.get("hero_damage_done_avg_per_10_min", 0)
+    if e10:
+        lines.append(f"每10分钟 — 击杀: {e10:.1f}　伤害: {d10:,.0f}")
+
+    eb = best.get("eliminations_most_in_game", 0)
+    ks = best.get("kill_streak_best", 0)
+    if eb:
+        lines.append(f"单局最高击杀: **{eb}**　最长连杀: **{ks}**")
+
+    acc = combat.get("weapon_accuracy", 0)
+    if acc:
+        lines.append(f"命中率: **{acc}%**")
+    return "\n".join(lines)
+
+
 def build_hero_embed(
     member: discord.Member,
     data: dict[str, Any],
@@ -527,10 +555,18 @@ def build_hero_embed(
         timestamp=_now(),
     )
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+
+    # Use hero portrait as thumbnail (fallback to player avatar)
+    hero_portrait = data.get("hero_portrait", "")
     avatar = data.get("avatar", "")
-    embed.set_thumbnail(url=avatar or member.display_avatar.url)
+    embed.set_thumbnail(url=hero_portrait or avatar or member.display_avatar.url)
+
+    # Use hero background as banner image (fallback to namecard)
+    hero_bg = data.get("hero_background", "")
     namecard = data.get("namecard", "")
-    if namecard:
+    if hero_bg:
+        embed.set_image(url=hero_bg)
+    elif namecard:
         embed.set_image(url=namecard)
 
     if not overview or not overview.get("games_played"):
@@ -566,52 +602,24 @@ def build_hero_embed(
         inline=True,
     )
 
-    # -- Career details from competitive + quickplay --
-    for mode_key, mode_label in (("competitive", "竞技"), ("quickplay", "快速")):
-        cd = data.get(mode_key) or {}
-        if not cd:
-            continue
-        game = cd.get("game") or {}
-        gp = game.get("games_played", 0)
-        if not gp:
-            continue
-        avg = cd.get("average") or {}
-        best = cd.get("best") or {}
-        combat = cd.get("combat") or {}
+    # Spacer to push mode blocks to new row
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
 
-        lines = [f"场次: **{gp}**　胜率: **{game.get('win_percentage', 0)}%**"]
-        e10 = avg.get("eliminations_avg_per_10_min", 0)
-        if e10:
-            lines.append(
-                f"每10分钟 — 击杀: **{e10:.1f}** "
-                f"伤害: **{avg.get('hero_damage_done_avg_per_10_min', 0):,.0f}**"
-            )
-        ks = best.get("kill_streak_best", 0)
-        eb = best.get("eliminations_most_in_game", 0)
-        if ks or eb:
-            parts = []
-            if eb:
-                parts.append(f"单局最高击杀: **{eb}**")
-            if ks:
-                parts.append(f"最长连杀: **{ks}**")
-            lines.append("　".join(parts))
-        acc = combat.get("weapon_accuracy", 0)
-        if acc:
-            lines.append(f"命中率: **{acc}%**")
+    # -- Competitive & Quickplay side by side --
+    comp_block = _mode_block(data.get("competitive") or {}, "竞技")
+    qp_block = _mode_block(data.get("quickplay") or {}, "快速")
 
-        embed.add_field(
-            name=f"🎮 {mode_label}模式",
-            value="\n".join(lines),
-            inline=True,
-        )
+    if comp_block:
+        embed.add_field(name="🎮 竞技模式", value=comp_block, inline=True)
+    if qp_block:
+        embed.add_field(name="🎮 快速模式", value=qp_block, inline=True)
 
-    # -- Hero-specific ability stats (the juicy part!) --
-    # Merge from both gamemodes, prefer competitive values
+    # -- Hero-specific ability stats --
     hero_spec: dict[str, Any] = {}
     for mode_key in ("quickplay", "competitive"):
         cd = data.get(mode_key) or {}
         hs = cd.get("hero_specific") or {}
-        hero_spec.update(hs)  # competitive overwrites quickplay
+        hero_spec.update(hs)
 
     if hero_spec:
         lines = []
@@ -620,7 +628,6 @@ def build_hero_embed(
             if formatted:
                 lines.append(formatted)
         if lines:
-            # Split into two columns if many stats
             if len(lines) > 8:
                 mid = (len(lines) + 1) // 2
                 embed.add_field(

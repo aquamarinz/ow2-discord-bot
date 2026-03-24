@@ -165,7 +165,7 @@ class OWAPIClient:
         base = f"{OVERFAST_API_BASE}/players/{tag}"
 
         # Fetch summary (for profile info) + stats/summary (for hero overview)
-        # + career for both gamemodes in parallel
+        # + career for both gamemodes + hero info (portrait/background) in parallel
         summary_task = self._get(f"{base}/summary")
         hero_summary_task = self._get(f"{base}/stats/summary")
         career_comp_task = self._get(
@@ -174,8 +174,12 @@ class OWAPIClient:
         career_qp_task = self._get(
             f"{base}/stats/career?gamemode=quickplay&hero={hero_key}"
         )
-        summary_raw, hero_summ_raw, career_comp, career_qp = await asyncio.gather(
-            summary_task, hero_summary_task, career_comp_task, career_qp_task
+        hero_info_task = self._get(f"{OVERFAST_API_BASE}/heroes/{hero_key}")
+        summary_raw, hero_summ_raw, career_comp, career_qp, hero_info = (
+            await asyncio.gather(
+                summary_task, hero_summary_task, career_comp_task,
+                career_qp_task, hero_info_task,
+            )
         )
 
         for raw in (summary_raw, hero_summ_raw):
@@ -198,6 +202,21 @@ class OWAPIClient:
             result["username"] = battletag.split("#")[0]
             result["avatar"] = ""
             result["namecard"] = ""
+
+        # Hero portrait & background image
+        if hero_info:
+            result["hero_portrait"] = hero_info.get("portrait", "")
+            bgs = hero_info.get("backgrounds") or []
+            # Pick the medium-size background (index 1) or fallback
+            if len(bgs) >= 2:
+                result["hero_background"] = bgs[1].get("url", "")
+            elif bgs:
+                result["hero_background"] = bgs[0].get("url", "")
+            else:
+                result["hero_background"] = ""
+        else:
+            result["hero_portrait"] = ""
+            result["hero_background"] = ""
 
         # Hero overview from stats/summary (combined all modes)
         if hero_summ_raw:
