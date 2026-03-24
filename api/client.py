@@ -138,7 +138,7 @@ class OWAPIClient:
         if stats_raw:
             result["general"] = self._parse_stats_general(stats_raw)
             result["roles"] = self._parse_stats_roles(stats_raw)
-            result["top_heroes"] = self._parse_top_heroes(stats_raw, limit=3)
+            result["top_heroes"] = self._parse_top_heroes(stats_raw, limit=5)
         else:
             result["general"] = {}
             result["roles"] = {}

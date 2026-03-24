@@ -198,7 +198,7 @@ def build_stats_embed(
     top_heroes = stats.get("top_heroes") or []
     if top_heroes:
         lines = []
-        for h in top_heroes[:3]:
+        for h in top_heroes[:5]:
             name = _hero_name(h["name"])
             hw = h.get("winrate", 0)
             lines.append(
