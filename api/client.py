@@ -22,15 +22,20 @@ _HEADERS = {"User-Agent": "OW2-Discord-Bot/1.0 (github.com/discord-ow-bot)"}
 class OWAPIClient:
     def __init__(self) -> None:
         self._session: Optional[aiohttp.ClientSession] = None
+        self._closing = False
 
     async def _sess(self) -> aiohttp.ClientSession:
+        if self._closing:
+            raise RuntimeError("Client is shutting down")
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(timeout=_TIMEOUT, headers=_HEADERS)
         return self._session
 
     async def close(self) -> None:
+        self._closing = True
         if self._session and not self._session.closed:
             await self._session.close()
+        self._session = None
 
     # ----------------------------------------------------------------- low-level
     async def _get(self, url: str) -> Optional[dict[str, Any]]:

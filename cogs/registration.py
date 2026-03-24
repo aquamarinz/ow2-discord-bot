@@ -13,8 +13,7 @@ _PRIVATE_HELP = (
     "1. 打开 Overwatch 2 客户端\n"
     "2. 点击右上角头像 → **选项**\n"
     "3. 在**社交**标签下，将**生涯档案**设为**公开**\n"
-    "4. 修改后等约 5 分钟再重新运行此命令\n\n"
-    "*(改动在 Battle.net 账户设置中也可完成)*"
+    "4. 修改后等约 5 分钟再重新运行此命令"
 )
 
 
@@ -22,9 +21,9 @@ class RegistrationCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    # ---------------------------------------------------------------- /register
     @app_commands.command(name="register", description="将你的 Overwatch BattleTag 绑定到 Discord 账号")
     @app_commands.describe(battletag="你的 BattleTag，例如: PlayerName#1234")
+    @app_commands.guild_only()
     async def register(self, interaction: discord.Interaction, battletag: str) -> None:
         await interaction.response.defer(ephemeral=True)
 
@@ -36,14 +35,12 @@ class RegistrationCog(commands.Cog):
             return
 
         exists, is_private = await self.bot.api.validate_battletag(battletag)
-
         if not exists:
             await interaction.followup.send(
                 embed=_err("找不到玩家", f"无法找到 BattleTag `{battletag}`，请确认拼写正确。"),
                 ephemeral=True,
             )
             return
-
         if is_private:
             await interaction.followup.send(
                 embed=discord.Embed(
@@ -59,34 +56,28 @@ class RegistrationCog(commands.Cog):
         guild_id   = str(interaction.guild_id)
 
         await self.bot.db.register_player(discord_id, guild_id, battletag)
-
-        # Take an initial stats snapshot in the background
-        try:
-            stats = await self.bot.api.get_player_stats(battletag)
-            if stats and not stats.get("_private"):
-                await self.bot.db.save_snapshot(discord_id, guild_id, stats)
-        except Exception as exc:
-            logger.warning("Initial snapshot failed for %s: %s", battletag, exc)
+        # Also save to accounts list so it shows up in /id list
+        await self.bot.db.add_account(discord_id, guild_id, battletag, label="主账号")
 
         embed = discord.Embed(
             title="✅ 注册成功",
-            description=f"已将 `{battletag}` 绑定到你的 Discord 账号。",
+            description=f"已将 `{battletag}` 绑定为你的主账号。",
             color=0x44FF88,
         )
-        embed.add_field(name="📊 查看数据",  value="`/stats` 查看当前战绩",    inline=True)
-        embed.add_field(name="🏆 排行榜",    value="`/leaderboard` 查看排名",  inline=True)
-        embed.add_field(name="📈 走势",       value="`/trends` 查看近期趋势",   inline=True)
+        embed.add_field(name="📊 查看数据",  value="`/stats`",       inline=True)
+        embed.add_field(name="🏆 排行榜",    value="`/leaderboard`", inline=True)
+        embed.add_field(name="🎮 管理账号",  value="`/id list`",     inline=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    # --------------------------------------------------------------- /unregister
     @app_commands.command(name="unregister", description="解除 Overwatch BattleTag 与 Discord 账号的绑定")
+    @app_commands.guild_only()
     async def unregister(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
 
         discord_id = str(interaction.user.id)
         guild_id   = str(interaction.guild_id)
+        player     = await self.bot.db.get_player(discord_id, guild_id)
 
-        player = await self.bot.db.get_player(discord_id, guild_id)
         if not player:
             await interaction.followup.send(
                 embed=_err("未注册", "你还没有绑定 Overwatch 账号。"), ephemeral=True
@@ -97,7 +88,7 @@ class RegistrationCog(commands.Cog):
         await interaction.followup.send(
             embed=discord.Embed(
                 title="✅ 已解除绑定",
-                description=f"已移除 `{player['battletag']}` 的绑定记录。",
+                description=f"已移除主账号 `{player['battletag']}` 的绑定。\n保存的其他 ID 仍可通过 `/id list` 查看。",
                 color=0x888888,
             ),
             ephemeral=True,
