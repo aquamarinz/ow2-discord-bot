@@ -15,6 +15,9 @@ SUPABASE_STADIUM_KEY = os.getenv(
     "your_supabase_anon_key_here"
 )
 
+# --- API request throttle ---
+API_REQUEST_DELAY = 0.5   # seconds between fallback retries
+
 # --- Leaderboard cache ---
 LEADERBOARD_CACHE_TTL = 300   # seconds
 
