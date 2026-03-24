@@ -125,12 +125,14 @@ class OWAPIClient:
             result["competitive"] = parsed_summary.get("competitive", {})
             result["username"] = parsed_summary.get("username", "")
             result["avatar"] = parsed_summary.get("avatar", "")
+            result["namecard"] = parsed_summary.get("namecard", "")
             result["endorsement"] = parsed_summary.get("endorsement", 0)
             result["title"] = parsed_summary.get("title", "")
         else:
             result["competitive"] = {}
             result["username"] = battletag.split("#")[0]
             result["avatar"] = ""
+            result["namecard"] = ""
             result["endorsement"] = 0
             result["title"] = ""
 
@@ -151,6 +153,124 @@ class OWAPIClient:
             result["career"] = {}
 
         return result
+
+    async def get_hero_stats(
+        self, battletag: str, hero_key: str
+    ) -> Optional[dict[str, Any]]:
+        """
+        Fetch combined hero stats (quickplay + competitive career data).
+        Also includes the hero summary from /stats/summary (no gamemode).
+        """
+        tag = battletag.replace("#", "-")
+        base = f"{OVERFAST_API_BASE}/players/{tag}"
+
+        # Fetch summary (for profile info) + stats/summary (for hero overview)
+        # + career for both gamemodes in parallel
+        summary_task = self._get(f"{base}/summary")
+        hero_summary_task = self._get(f"{base}/stats/summary")
+        career_comp_task = self._get(
+            f"{base}/stats/career?gamemode=competitive&hero={hero_key}"
+        )
+        career_qp_task = self._get(
+            f"{base}/stats/career?gamemode=quickplay&hero={hero_key}"
+        )
+        summary_raw, hero_summ_raw, career_comp, career_qp = await asyncio.gather(
+            summary_task, hero_summary_task, career_comp_task, career_qp_task
+        )
+
+        for raw in (summary_raw, hero_summ_raw):
+            if raw and raw.get("_private"):
+                return {"_private": True, "battletag": battletag}
+
+        result: dict[str, Any] = {
+            "battletag": battletag,
+            "hero_key": hero_key,
+            "_private": False,
+        }
+
+        # Profile info
+        if summary_raw and not summary_raw.get("_private"):
+            ps = self._parse_overfast_summary(battletag, summary_raw)
+            result["username"] = ps.get("username", "")
+            result["avatar"] = ps.get("avatar", "")
+            result["namecard"] = ps.get("namecard", "")
+        else:
+            result["username"] = battletag.split("#")[0]
+            result["avatar"] = ""
+            result["namecard"] = ""
+
+        # Hero overview from stats/summary (combined all modes)
+        if hero_summ_raw:
+            heroes = hero_summ_raw.get("heroes") or {}
+            hd = heroes.get(hero_key) or {}
+            if hd:
+                total = hd.get("total") or {}
+                avg = hd.get("average") or {}
+                result["overview"] = {
+                    "games_played": hd.get("games_played", 0),
+                    "games_won": hd.get("games_won", 0),
+                    "games_lost": hd.get("games_lost", 0),
+                    "time_played": hd.get("time_played", 0),
+                    "winrate": hd.get("winrate", 0),
+                    "kda": hd.get("kda", 0),
+                    "total_eliminations": total.get("eliminations", 0),
+                    "total_deaths": total.get("deaths", 0),
+                    "total_damage": total.get("damage", 0),
+                    "total_healing": total.get("healing", 0),
+                    "avg_eliminations": avg.get("eliminations", 0),
+                    "avg_deaths": avg.get("deaths", 0),
+                    "avg_damage": avg.get("damage", 0),
+                    "avg_healing": avg.get("healing", 0),
+                }
+            else:
+                result["overview"] = {}
+        else:
+            result["overview"] = {}
+
+        # Career data per gamemode
+        result["competitive"] = self._parse_hero_career(career_comp, hero_key)
+        result["quickplay"] = self._parse_hero_career(career_qp, hero_key)
+
+        return result
+
+    @staticmethod
+    def _parse_hero_career(data: Optional[dict], hero_key: str) -> dict:
+        """Parse career data for a specific hero."""
+        if not data or data.get("_private"):
+            return {}
+        hero_data = data.get(hero_key) or {}
+        if not hero_data:
+            return {}
+        return {
+            "combat": hero_data.get("combat") or {},
+            "game": hero_data.get("game") or {},
+            "best": hero_data.get("best") or {},
+            "average": hero_data.get("average") or {},
+            "assists": hero_data.get("assists") or {},
+            "hero_specific": hero_data.get("hero_specific") or {},
+            "match_awards": hero_data.get("match_awards") or {},
+        }
+
+    async def get_played_heroes(self, battletag: str) -> list[dict]:
+        """Return list of heroes the player has played, sorted by time."""
+        tag = battletag.replace("#", "-")
+        data = await self._get(
+            f"{OVERFAST_API_BASE}/players/{tag}/stats/summary"
+        )
+        if not data or data.get("_private"):
+            return []
+        heroes_raw = data.get("heroes") or {}
+        hero_list = []
+        for name, hd in heroes_raw.items():
+            if not hd or not hd.get("games_played"):
+                continue
+            hero_list.append({
+                "key": name,
+                "games_played": hd.get("games_played", 0),
+                "time_played": hd.get("time_played", 0),
+            })
+        hero_list.sort(key=lambda h: h["time_played"], reverse=True)
+        return hero_list
 
     async def validate_battletag(self, battletag: str) -> tuple[bool, bool]:
         """Returns (player_exists, is_private)."""
@@ -184,6 +304,7 @@ class OWAPIClient:
             "battletag": battletag,
             "username": data.get("username") or battletag.split("#")[0],
             "avatar": data.get("avatar", ""),
+            "namecard": data.get("namecard", ""),
             "title": data.get("title", ""),
             "endorsement": (data.get("endorsement") or {}).get("level", 0),
             "competitive": competitive,
@@ -274,6 +395,10 @@ class OWAPIClient:
         combat = all_heroes.get("combat") or {}
         game = all_heroes.get("game") or {}
 
+        # Match awards
+        awards = all_heroes.get("match_awards") or {}
+        assists_sec = all_heroes.get("assists") or {}
+
         return {
             # Per-10-min averages
             "eliminations_per_10": avg.get("eliminations_avg_per_10_min", 0),
@@ -295,6 +420,19 @@ class OWAPIClient:
             "critical_hit_accuracy": combat.get("critical_hit_accuracy", 0),
             "melee_final_blows": combat.get("melee_final_blows", 0),
             "solo_kills": combat.get("solo_kills", 0),
+            "environmental_kills": combat.get("environmental_kills", 0),
+            "objective_kills": combat.get("objective_kills", 0),
+            "time_spent_on_fire": combat.get("time_spent_on_fire", 0),
+            "on_fire_pct": combat.get("of_match_on_fire", 0),
+            # Assists
+            "defensive_assists": assists_sec.get("defensive_assists", 0),
+            "offensive_assists": assists_sec.get("offensive_assists", 0),
+            "healing_done_total": assists_sec.get("healing_done", 0),
+            # Match awards
+            "cards": awards.get("cards", 0),
+            "medals_gold": awards.get("medals_gold", 0),
+            "medals_silver": awards.get("medals_silver", 0),
+            "medals_bronze": awards.get("medals_bronze", 0),
             # Game
             "time_played": game.get("time_played", 0),
             "games_played": game.get("games_played", 0),

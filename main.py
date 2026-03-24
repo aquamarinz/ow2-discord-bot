@@ -22,6 +22,7 @@ _COGS = [
     "cogs.leaderboard",
     "cogs.stadium",
     "cogs.identity",
+    "cogs.hero",
 ]
 
 
