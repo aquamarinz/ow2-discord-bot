@@ -31,7 +31,7 @@ class IdGroup(app_commands.Group):
     @app_commands.command(name="add", description="将一个 BattleTag 添加到你的保存列表")
     @app_commands.describe(
         battletag="Overwatch BattleTag，例如 PlayerName#1234",
-        label="备注名称（可选），例如"备用号"、"练习号"",
+        label="备注名称（可选），例如「备用号」、「练习号」",
     )
     async def id_add(
         self,
