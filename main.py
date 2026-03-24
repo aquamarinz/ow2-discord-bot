@@ -59,6 +59,7 @@ class OWBot(commands.Bot):
     async def close(self) -> None:
         self._snapshot_task.cancel()
         await self.api.close()
+        await self.db.close()
         await super().close()
 
     async def on_ready(self) -> None:

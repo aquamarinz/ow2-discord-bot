@@ -9,7 +9,8 @@ OWAPI_FALLBACK_BASE = os.getenv("OWAPI_FALLBACK_BASE", "https://owapi.eu")
 API_REQUEST_DELAY = 0.4
 
 # --- Database ---
-DATABASE_PATH = os.getenv("DATABASE_PATH", "ow_bot.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+DATABASE_PATH = os.getenv("DATABASE_PATH", "ow_bot.db")  # SQLite fallback
 
 # How many periodic snapshots to keep per player
 MAX_SNAPSHOTS_PER_PLAYER = 60
