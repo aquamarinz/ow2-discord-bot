@@ -67,6 +67,60 @@ class StatsCog(commands.Cog):
 
         await interaction.followup.send(embed=build_stats_embed(target, data))
 
+    # ── /lookup ──────────────────────────────────────────────────────────
+    @app_commands.command(name="lookup", description="输入 BattleTag 直接查看任意玩家战绩（无需注册）")
+    @app_commands.describe(
+        battletag="玩家 BattleTag（格式：Name#12345）",
+        mode="选择查看竞技或快速比赛数据（默认全部）",
+    )
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="全部数据", value="all"),
+        app_commands.Choice(name="竞技比赛", value="competitive"),
+        app_commands.Choice(name="快速比赛", value="quickplay"),
+    ])
+    @app_commands.guild_only()
+    async def lookup(
+        self,
+        interaction: discord.Interaction,
+        battletag: str,
+        mode: app_commands.Choice[str] = None,
+    ) -> None:
+        if "#" not in battletag:
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="❌ 格式错误",
+                    description="BattleTag 格式应为 `Name#12345`。",
+                    color=0xFF4444,
+                ),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+        gamemode = mode.value if mode else "all"
+
+        data = await self.bot.api.get_player_stats(battletag, gamemode=gamemode)
+        if data is None:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="⚠️ 数据获取失败",
+                    description=f"无法获取 `{battletag}` 的数据，请检查 BattleTag 是否正确或稍后重试。",
+                    color=0xFFAA00,
+                )
+            )
+            return
+        if data.get("_private"):
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="🔒 主页设为私密",
+                    description=f"`{battletag}` 的主页设为私密，无法读取数据。",
+                    color=0xFFAA00,
+                )
+            )
+            return
+
+        await interaction.followup.send(embed=build_stats_embed(interaction.user, data))
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(StatsCog(bot))
