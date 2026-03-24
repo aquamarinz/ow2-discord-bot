@@ -60,15 +60,6 @@ class IdGroup(app_commands.Group):
             )
             return
 
-        # Validate the BattleTag
-        exists, _ = await self.bot.api.validate_battletag(battletag)
-        if not exists:
-            await interaction.followup.send(
-                embed=_err("找不到玩家", f"无法找到 BattleTag `{battletag}`，请确认拼写是否正确。"),
-                ephemeral=True,
-            )
-            return
-
         await self.bot.db.add_account(discord_id, guild_id, battletag, label)
         label_txt = f"（备注：{label}）" if label else ""
         await interaction.followup.send(
@@ -125,21 +116,11 @@ class IdGroup(app_commands.Group):
             )
             return
 
-        # Fetch live rank data to show in the share embed
-        summary = None
-        try:
-            summary = await self.bot.api.get_player_summary(matched["battletag"])
-            if summary and summary.get("_private"):
-                summary = None
-        except Exception as exc:
-            logger.warning("id share summary fetch failed for %s: %s", matched["battletag"], exc)
-
         await interaction.followup.send(
             embed=build_id_share_embed(
                 interaction.user,
                 matched["battletag"],
                 matched.get("label"),
-                summary,
             )
         )
 

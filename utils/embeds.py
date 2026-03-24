@@ -359,35 +359,18 @@ def build_id_share_embed(
     member: discord.Member,
     battletag: str,
     label: Optional[str],
-    summary: Optional[dict],
 ) -> discord.Embed:
-    comp = (summary or {}).get("competitive") or {}
-    color = _embed_color(comp) if comp else 0x4488FF
-
     embed = discord.Embed(
         title=f"🎮  {member.display_name} 的 Overwatch ID",
-        color=color,
+        color=0x4488FF,
         timestamp=_now(),
     )
     embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
-    avatar = (summary or {}).get("avatar", "")
-    embed.set_thumbnail(url=avatar or member.display_avatar.url)
+    embed.set_thumbnail(url=member.display_avatar.url)
 
     embed.add_field(name="BattleTag", value=f"`{battletag}`", inline=True)
     if label:
         embed.add_field(name="备注", value=label, inline=True)
-
-    if comp:
-        lines = []
-        for role in ("tank", "damage", "support"):
-            rd = comp.get(role)
-            if rd:
-                lines.append(
-                    f"{ROLE_EMOJIS[role]} {ROLE_LABELS[role]}: "
-                    f"{_fmt_rank(rd.get('division', 'Unranked'), rd.get('tier', 0))}"
-                )
-        if lines:
-            embed.add_field(name="🏅 当前段位", value="\n".join(lines), inline=False)
 
     embed.set_footer(text="复制 BattleTag 即可添加好友")
     return embed
