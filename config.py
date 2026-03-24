@@ -10,10 +10,8 @@ DATABASE_URL  = os.getenv("DATABASE_URL",  "")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "ow_bot.db")
 
 # --- Stadium ---
-SUPABASE_STADIUM_KEY = os.getenv(
-    "SUPABASE_STADIUM_KEY",
-    "your_supabase_anon_key_here"
-)
+SUPABASE_STADIUM_URL = os.getenv("SUPABASE_STADIUM_URL", "")
+SUPABASE_STADIUM_KEY = os.getenv("SUPABASE_STADIUM_KEY", "")
 
 # --- API request throttle ---
 API_REQUEST_DELAY = 0.5   # seconds between fallback retries

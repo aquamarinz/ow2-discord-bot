@@ -11,16 +11,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from config import SUPABASE_STADIUM_URL, SUPABASE_STADIUM_KEY
 from utils.embeds import _HERO_CN
 
 logger = logging.getLogger(__name__)
 
-_SUPABASE_URL = (
-    "https://your-project.supabase.co/rest/v1/rpc/filter_builds_public_v17"
-)
-_SUPABASE_KEY = (
-    "your_supabase_anon_key_here"
-)
+_SUPABASE_URL = SUPABASE_STADIUM_URL
+_SUPABASE_KEY = SUPABASE_STADIUM_KEY
 _BASE_URL = "https://stadiumbuilds.io"
 _HEADERS = {
     "apikey": _SUPABASE_KEY,
