@@ -1,0 +1,6 @@
+.env
+ow_bot.db
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
