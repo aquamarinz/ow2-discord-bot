@@ -40,8 +40,11 @@ class OWBot(commands.Bot):
             await self.load_extension(cog)
             logger.info("Loaded cog: %s", cog)
 
-        await self.tree.sync()
-        logger.info("Slash commands synced globally")
+        if os.getenv("SYNC_COMMANDS", "0") == "1":
+            await self.tree.sync()
+            logger.info("Slash commands synced globally")
+        else:
+            logger.info("Skipping tree.sync (set SYNC_COMMANDS=1 to force)")
 
     async def close(self) -> None:
         await self.api.close()
