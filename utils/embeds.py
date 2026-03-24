@@ -561,13 +561,7 @@ def build_hero_embed(
     avatar = data.get("avatar", "")
     embed.set_thumbnail(url=hero_portrait or avatar or member.display_avatar.url)
 
-    # Use hero background as banner image (fallback to namecard)
-    hero_bg = data.get("hero_background", "")
-    namecard = data.get("namecard", "")
-    if hero_bg:
-        embed.set_image(url=hero_bg)
-    elif namecard:
-        embed.set_image(url=namecard)
+    # No banner image for hero embed — keep it clean
 
     if not overview or not overview.get("games_played"):
         embed.description = f"没有找到 {hero_cn} 的游戏数据。"
