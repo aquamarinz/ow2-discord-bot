@@ -1,5 +1,6 @@
 """
 /stadium <hero> — top 5 Stadium build codes from stadiumbuilds.io
+Supports Chinese / English hero names with autocomplete.
 """
 from __future__ import annotations
 
@@ -9,6 +10,8 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+from utils.embeds import _HERO_CN
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,25 @@ _HEADERS = {
 }
 _ROLE_EMOJI = {"Tank": "🛡️", "Damage": "⚔️", "Support": "💚"}
 
+# ── Hero lookup tables ────────────────────────────────────────────────────────
+# cn → english key, english key → english key, display name for the API
+_HERO_SEARCH: dict[str, str] = {}
+for _k, _cn in _HERO_CN.items():
+    _HERO_SEARCH[_cn.lower()] = _k
+    _HERO_SEARCH[_k.lower()] = _k
+    _HERO_SEARCH[_k.replace("-", " ").lower()] = _k
+
+# Stadium API uses different name formats — map our keys to stadium display names
+_STADIUM_NAME: dict[str, str] = {k: k.replace("-", " ").title() for k in _HERO_CN}
+_STADIUM_NAME.update({
+    "dva": "D.Va",
+    "soldier-76": "Soldier: 76",
+    "wrecking-ball": "Wrecking Ball",
+    "junker-queen": "Junker Queen",
+    "torbjorn": "Torbjörn",
+    "lucio": "Lúcio",
+})
+
 
 class StadiumCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
@@ -36,12 +58,18 @@ class StadiumCog(commands.Cog):
         name="stadium",
         description="查询 Stadium 模式英雄的 Top 5 Build Codes（数据来自 stadiumbuilds.io）",
     )
-    @app_commands.describe(hero="英雄名称，例如 Kiriko / Sigma / Mercy")
+    @app_commands.describe(hero="英雄名称（中文或英文，如 源氏 / genji / Kiriko）")
+    @app_commands.guild_only()
     async def stadium(self, interaction: discord.Interaction, hero: str) -> None:
         await interaction.response.defer()
 
+        # Resolve input to English key
+        hero_key = _HERO_SEARCH.get(hero.lower().strip())
+        search_name = _STADIUM_NAME.get(hero_key, hero) if hero_key else hero
+        display_cn = _HERO_CN.get(hero_key, search_name) if hero_key else hero
+
         payload = {
-            "p_search_text": hero,
+            "p_search_text": search_name,
             "p_sort_by": "hotness",
             "p_sort_direction": "desc",
             "p_offset": 0,
@@ -62,7 +90,8 @@ class StadiumCog(commands.Cog):
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    _SUPABASE_URL, headers=_HEADERS, json=payload, timeout=aiohttp.ClientTimeout(total=10)
+                    _SUPABASE_URL, headers=_HEADERS, json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status != 200:
                         raise RuntimeError(f"HTTP {resp.status}")
@@ -83,8 +112,8 @@ class StadiumCog(commands.Cog):
                 embed=discord.Embed(
                     title="🔍 未找到结果",
                     description=(
-                        f"没有找到关于 **{hero}** 的 Stadium Build。\n"
-                        "请检查英雄名称是否正确（英文名，如 Kiriko、Sigma）。"
+                        f"没有找到关于 **{display_cn}** ({search_name}) 的 Stadium Build。\n"
+                        "请检查英雄名称是否正确。"
                     ),
                     color=0xFFAA00,
                 )
@@ -92,8 +121,8 @@ class StadiumCog(commands.Cog):
             return
 
         embed = discord.Embed(
-            title=f"🏟️ {hero.title()} — Top Stadium Builds",
-            url=f"{_BASE_URL}/browse?search={hero.replace(' ', '+')}",
+            title=f"🏟️ {display_cn} ({search_name}) — Top Stadium Builds",
+            url=f"{_BASE_URL}/browse?search={search_name.replace(' ', '+')}",
             color=0xFF6B2B,
         )
         embed.set_footer(text="数据来源：stadiumbuilds.io • 按热度排序")
@@ -124,6 +153,20 @@ class StadiumCog(commands.Cog):
             )
 
         await interaction.followup.send(embed=embed)
+
+    @stadium.autocomplete("hero")
+    async def _hero_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        query = current.lower().strip()
+        choices = []
+        for key, cn in sorted(_HERO_CN.items(), key=lambda x: x[1]):
+            label = f"{cn} ({key})"
+            if not query or query in cn.lower() or query in key.lower():
+                choices.append(app_commands.Choice(name=label, value=key))
+            if len(choices) >= 25:
+                break
+        return choices
 
 
 async def setup(bot: commands.Bot) -> None:
