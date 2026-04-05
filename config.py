@@ -5,9 +5,10 @@ import os
 OVERFAST_API_BASE   = os.getenv("OVERFAST_API_BASE",   "https://overfast-api.tekrop.fr")
 OWAPI_FALLBACK_BASE = os.getenv("OWAPI_FALLBACK_BASE", "https://owapi.eu")
 
-# --- Database ---
-DATABASE_URL  = os.getenv("DATABASE_URL",  "")
-DATABASE_PATH = os.getenv("DATABASE_PATH", "ow_bot.db")
+# --- Database (SQLite only) ---
+# On Railway the volume is mounted at /data; locally falls back to ./ow_bot.db
+_DEFAULT_DB_PATH = "/data/ow_bot.db" if os.getenv("RAILWAY_ENVIRONMENT") else "ow_bot.db"
+DATABASE_PATH = os.getenv("DATABASE_PATH", _DEFAULT_DB_PATH)
 
 # --- Stadium ---
 SUPABASE_STADIUM_URL = os.getenv("SUPABASE_STADIUM_URL", "")
