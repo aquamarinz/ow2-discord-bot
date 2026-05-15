@@ -49,6 +49,13 @@ class MinerCog(commands.Cog):
             return
 
         canonical = link["twitch_user"]
+        # Refresh last_interaction_channel_id every /miner call so notifications
+        # follow the user to whichever channel they last interacted in.
+        await self.bot.db.set_last_interaction_channel(
+            str(interaction.user.id),
+            str(interaction.guild_id),
+            str(interaction.channel_id),
+        )
         miner_info = TWITCH_MINERS.get(canonical)
         if miner_info is None:
             await interaction.followup.send(
