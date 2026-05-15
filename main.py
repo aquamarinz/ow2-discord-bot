@@ -23,6 +23,7 @@ _COGS = [
     "cogs.stadium",
     "cogs.identity",
     "cogs.hero",
+    "cogs.twitch_link",
 ]
 
 
