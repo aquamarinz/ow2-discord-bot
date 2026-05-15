@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import sys
 
-# Make bot modules importable from tests (src/ is sibling of tests/)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# Make bot modules importable from tests (bot files live at repo root,
+# not under a src/ subdir; tests/ is sibling of those modules)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest_asyncio
 
