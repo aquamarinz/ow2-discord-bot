@@ -31,13 +31,18 @@ class MinerCog(commands.Cog):
     )
     @app_commands.guild_only()
     async def miner(self, interaction: discord.Interaction) -> None:
+        # Defer FIRST (always within 3s window). Then do I/O. Use followup to reply.
+        # Prevents discord.errors.HTTPException 40060 "Interaction has already been
+        # acknowledged" from any race / latency between cmd dispatch and our response.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         # 1. Resolve bound twitch user from DB
         link = await self.bot.db.get_twitch_link(
             str(interaction.user.id),
             str(interaction.guild_id),
         )
         if link is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "你还没绑定 Twitch 账号。先跑 `/twitch link <username>`。",
                 ephemeral=True,
             )
@@ -46,7 +51,7 @@ class MinerCog(commands.Cog):
         canonical = link["twitch_user"]
         miner_info = TWITCH_MINERS.get(canonical)
         if miner_info is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Twitch 账号 `{canonical}` 当前没有 miner 在跑。"
                 " 需要 operator 先在 Pi 上起一个并加进 `TWITCH_MINERS`。",
                 ephemeral=True,
@@ -56,10 +61,7 @@ class MinerCog(commands.Cog):
         container, port = miner_info
         base_url = f"http://{container}:{port}"
 
-        # 2. Defer ephemerally (HTTP fetches usually <500ms but defer for safety)
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        # 3. Concurrent fetch /api/status + /api/campaigns
+        # 2. Concurrent fetch /api/status + /api/campaigns
         try:
             timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -76,7 +78,7 @@ class MinerCog(commands.Cog):
             )
             return
 
-        # 4. Build embed
+        # 3. Build embed
         embed = self._build_embed(canonical, status_data, campaigns_data)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
