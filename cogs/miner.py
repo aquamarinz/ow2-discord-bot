@@ -21,6 +21,46 @@ logger = logging.getLogger(__name__)
 HTTP_TIMEOUT_SECONDS = 5
 
 
+def compute_top_drop(campaigns_data: dict) -> dict | None:
+    """Return top in-progress drop (highest progress) or None.
+
+    Returned dict contains: id, drop_name, game, campaign,
+    current_min, required_min, progress (float 0.0-1.0).
+
+    Caller semantics (spec §9, D12):
+    - None means no in-progress drop; caller MUST keep db's last_top_drop_id
+      unchanged. idle-pause-resume becomes "switch" via the next non-None tick.
+    - Non-None with id != db last_top_drop_id is a switch. Covers both
+      old-completed→new-started and old-campaign-expired→new-started.
+
+    Drops with falsy id are skipped to avoid set_last_top_drop(None) wiping
+    the row back to bootstrap state.
+    """
+    campaigns = campaigns_data.get("campaigns", []) or []
+    in_progress: list[dict] = []
+    for c in campaigns:
+        if not (c.get("linked") and c.get("active")):
+            continue
+        for d in c.get("drops", []) or []:
+            drop_id = d.get("id")
+            if not drop_id:
+                continue
+            if (d.get("current_minutes") or 0) > 0 and not d.get("is_claimed"):
+                in_progress.append({
+                    "id": drop_id,
+                    "drop_name": d.get("name") or "?",
+                    "game": c.get("game_name") or "?",
+                    "campaign": c.get("name") or "?",
+                    "current_min": d.get("current_minutes") or 0,
+                    "required_min": d.get("required_minutes") or 0,
+                    "progress": float(d.get("progress") or 0.0),
+                })
+    if not in_progress:
+        return None
+    in_progress.sort(key=lambda x: x["progress"], reverse=True)
+    return in_progress[0]
+
+
 class MinerCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -111,12 +151,18 @@ class MinerCog(commands.Cog):
             if c.get("linked") and c.get("active")
         ]
 
-        # Find drops with progress > 0 and not yet claimed
+        # Find drops with progress > 0 and not yet claimed.
+        # Inline rather than reuse compute_top_drop because we need can_claim
+        # field and the ordered list (for "Also in progress" section).
         in_progress = []
         for c in linked_active:
             for d in c.get("drops", []) or []:
+                drop_id = d.get("id")
+                if not drop_id:
+                    continue
                 if (d.get("current_minutes") or 0) > 0 and not d.get("is_claimed"):
                     in_progress.append({
+                        "id": drop_id,
                         "game": c.get("game_name") or "?",
                         "campaign": c.get("name") or "?",
                         "drop_name": d.get("name") or "?",
