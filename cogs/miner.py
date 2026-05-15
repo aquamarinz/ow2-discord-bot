@@ -1,8 +1,9 @@
-"""Twitch Drops Miner status query cog — /miner slash command.
+"""Twitch Drops Miner status query cog — /miner slash command + notifier_loop.
 
-Reads HTTP API of rangermix miner (no socket.io). Each /miner invocation
-hits /api/status and /api/campaigns on the configured miner, builds an
-ephemeral Discord Embed with current status + progress.
+Reads HTTP API of rangermix miner (no socket.io). The /miner command does a
+one-shot fetch and replies ephemerally. The notifier_loop runs every 60s in
+the background, polling /api/campaigns per twitch_links row, and pushes a
+channel message + @user mention when the top in-progress drop_id changes.
 """
 from __future__ import annotations
 import asyncio
@@ -12,13 +13,15 @@ from datetime import datetime, timezone
 import aiohttp
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from config import TWITCH_MINERS
+from database import LinkState
 
 logger = logging.getLogger(__name__)
 
 HTTP_TIMEOUT_SECONDS = 5
+NOTIFIER_LOOP_SECONDS = 60
 
 
 def compute_top_drop(campaigns_data: dict) -> dict | None:
@@ -64,6 +67,24 @@ def compute_top_drop(campaigns_data: dict) -> dict | None:
 class MinerCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self._session: aiohttp.ClientSession | None = None
+
+    async def cog_load(self) -> None:
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
+        )
+        self.notifier_loop.start()
+
+    async def cog_unload(self) -> None:
+        # Shutdown order (codex round-2 note 3):
+        # 1. cancel the loop so no new iteration starts
+        # 2. close the session AFTER any running tick has bailed out
+        #    (running tick checks self._session.closed at the top of _process_link)
+        # 3. null out _session so a leftover reference cannot accidentally be used
+        self.notifier_loop.cancel()
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
 
     @app_commands.command(
         name="miner",
@@ -108,16 +129,21 @@ class MinerCog(commands.Cog):
         container, port = miner_info
         base_url = f"http://{container}:{port}"
 
-        # 2. Concurrent fetch /api/status + /api/campaigns
+        # 2. Concurrent fetch /api/status + /api/campaigns using the shared session.
+        if self._session is None or self._session.closed:
+            # cog is being unloaded — bail
+            await interaction.followup.send(
+                "bot 正在重启，30 秒后再试。",
+                ephemeral=True,
+            )
+            return
         try:
-            timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT_SECONDS)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                status_data, campaigns_data = await asyncio.gather(
-                    self._fetch_json(session, f"{base_url}/api/status"),
-                    self._fetch_json(session, f"{base_url}/api/campaigns"),
-                )
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            logger.info("miner %s unreachable: %s", canonical, e)
+            status_data, campaigns_data = await asyncio.gather(
+                self._fetch_json(self._session, f"{base_url}/api/status"),
+                self._fetch_json(self._session, f"{base_url}/api/campaigns"),
+            )
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+            logger.info("miner %s unreachable/invalid: %s", canonical, e)
             await interaction.followup.send(
                 f"miner `{canonical}` 暂时联系不上（容器可能在重启 / 网络问题）。"
                 "30 秒后再试。",
@@ -239,6 +265,143 @@ class MinerCog(commands.Cog):
             text=f"来源:miner /api/* @ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
         )
         return embed
+
+    # ─────────────────────────────────────────────────────────────────
+    # Background notifier loop (drop-switch push notifications)
+    # ─────────────────────────────────────────────────────────────────
+
+    @tasks.loop(seconds=NOTIFIER_LOOP_SECONDS)
+    async def notifier_loop(self) -> None:
+        links = await self.bot.db.iter_links_with_state()
+        for link in links:
+            try:
+                await self._process_link(link)
+            except asyncio.CancelledError:
+                # cog_unload cancellation — let it propagate so the loop stops cleanly
+                raise
+            except Exception:
+                # broad catch: per-link failures must NOT kill notifier_loop
+                # (codex round-2 note 1: don't catch BaseException;
+                # CancelledError above is the escape)
+                logger.exception(
+                    "notifier: unexpected failure for user=%s guild=%s twitch=%s",
+                    link.discord_id, link.guild_id, link.twitch_user,
+                )
+                continue
+
+    @notifier_loop.before_loop
+    async def _notifier_wait_ready(self) -> None:
+        await self.bot.wait_until_ready()
+
+    @notifier_loop.error
+    async def _on_error(self, exc: BaseException) -> None:
+        # discord.py 2.x: this fires only when an exception escapes the loop body.
+        # It is NOT auto-continue — the loop is now stopped until restart.
+        # Per-link failures should be caught inside notifier_loop's for-loop;
+        # this hook is a diagnostic of last resort.
+        logger.exception(
+            "notifier_loop FAILED (will stop until docker compose restart): %s", exc
+        )
+
+    async def _process_link(self, link: LinkState) -> None:
+        # Codex round-2 note 2: guard against the session being closed mid-tick
+        # by cog_unload.
+        if self._session is None or self._session.closed:
+            return
+
+        miner = TWITCH_MINERS.get(link.twitch_user)
+        if miner is None:
+            return  # operator hasn't started a miner for this twitch user
+
+        container, port = miner
+        base_url = f"http://{container}:{port}"
+
+        # — network layer —
+        try:
+            data = await self._fetch_json(self._session, f"{base_url}/api/campaigns")
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+            # ValueError covers json.JSONDecodeError when body is invalid JSON;
+            # aiohttp.ContentTypeError is a ClientError subclass (already covered).
+            logger.info("notifier: miner %s unreachable/invalid: %s", link.twitch_user, e)
+            return
+
+        # — data layer —
+        try:
+            top = compute_top_drop(data)
+        except Exception as e:
+            logger.error(
+                "notifier: compute_top_drop failed for twitch=%s: %s",
+                link.twitch_user, e,
+            )
+            return
+
+        if top is None:
+            # No in-progress drop. Per D12: preserve db's last_top_drop_id.
+            # The next non-None top different from db will be a switch.
+            return
+
+        if top["id"] == link.last_top_drop_id:
+            return  # no change
+
+        # — notification decision —
+        should_notify = (
+            link.last_top_drop_id is not None  # silent bootstrap on NULL
+            and link.last_interaction_channel_id  # dormant rows have no channel yet
+        )
+        if should_notify:
+            await self._push_notification(link, top, data)
+
+        # — db update —
+        try:
+            await self.bot.db.set_last_top_drop(
+                link.discord_id, link.guild_id, top["id"]
+            )
+        except Exception as e:
+            logger.error(
+                "notifier: db.set_last_top_drop failed for user=%s guild=%s: %s",
+                link.discord_id, link.guild_id, e,
+            )
+
+    async def _push_notification(
+        self, link: LinkState, top: dict, data: dict
+    ) -> None:
+        try:
+            channel_id_int = int(link.last_interaction_channel_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                "notifier: invalid channel_id=%r for user=%s; skip",
+                link.last_interaction_channel_id, link.discord_id,
+            )
+            return
+        channel = self.bot.get_channel(channel_id_int)
+        if channel is None:
+            logger.warning(
+                "notifier: channel %s not found (deleted/bot kicked/thread archived) for user=%s guild=%s",
+                link.last_interaction_channel_id, link.discord_id, link.guild_id,
+            )
+            return
+        content = (
+            f"<@{link.discord_id}> 切到新挂宝目标:**{top['drop_name']}** "
+            f"_({top['game']} — {top['campaign']})_"
+        )
+        embed = self._build_embed(link.twitch_user, status_data=None, campaigns_data=data)
+        try:
+            await channel.send(content=content, embed=embed)
+        except discord.Forbidden:
+            logger.warning(
+                "notifier: forbidden in channel=%s; skipping",
+                link.last_interaction_channel_id,
+            )
+        except discord.NotFound:
+            logger.warning(
+                "notifier: channel/thread %s no longer exists; skipping",
+                link.last_interaction_channel_id,
+            )
+        except discord.HTTPException as e:
+            logger.warning(
+                "notifier: discord HTTP error in channel=%s: %s",
+                link.last_interaction_channel_id, e,
+            )
 
 
 async def setup(bot: commands.Bot) -> None:
