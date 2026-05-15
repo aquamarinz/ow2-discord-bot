@@ -32,6 +32,7 @@ class TwitchLinkCog(commands.Cog):
                 str(interaction.user.id),
                 str(interaction.guild_id),
                 username,
+                str(interaction.channel_id),
             )
         except ValueError as e:
             logger.info("Twitch link rejected: %s", e)

@@ -1,11 +1,22 @@
 from __future__ import annotations
+from dataclasses import dataclass
 import logging
 import re
 from typing import Optional
 
-from config import DATABASE_PATH
+import config
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class LinkState:
+    discord_id: str
+    guild_id: str
+    twitch_user: str
+    last_interaction_channel_id: str | None
+    last_top_drop_id: str | None
+
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS players (
@@ -41,11 +52,27 @@ class Database:
 
     async def initialize(self) -> None:
         import aiosqlite
-        self._conn = await aiosqlite.connect(DATABASE_PATH)
+        self._conn = await aiosqlite.connect(config.DATABASE_PATH)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(_DDL)
         await self._conn.commit()
-        logger.info("SQLite ready at %s", DATABASE_PATH)
+        await self._migrate_v2()
+        logger.info("SQLite ready at %s (v2 migration applied)", config.DATABASE_PATH)
+
+    async def _migrate_v2(self) -> None:
+        """Idempotent ALTER TABLE for last_interaction_channel_id + last_top_drop_id."""
+        cur = await self._conn.execute("PRAGMA table_info(twitch_links)")
+        cols = {row[1] for row in await cur.fetchall()}
+        await cur.close()
+        if "last_interaction_channel_id" not in cols:
+            await self._conn.execute(
+                "ALTER TABLE twitch_links ADD COLUMN last_interaction_channel_id TEXT"
+            )
+        if "last_top_drop_id" not in cols:
+            await self._conn.execute(
+                "ALTER TABLE twitch_links ADD COLUMN last_top_drop_id TEXT"
+            )
+        await self._conn.commit()
 
     async def close(self) -> None:
         if self._conn:
@@ -134,15 +161,20 @@ class Database:
             )
         return canonical
 
-    async def link_twitch(self, discord_id: str, guild_id: str, twitch_user: str) -> None:
+    async def link_twitch(
+        self, discord_id: str, guild_id: str, twitch_user: str, channel_id: str
+    ) -> None:
         canonical = self._canonical_twitch_user(twitch_user)
         await self._execute(
-            """INSERT INTO twitch_links (discord_id, guild_id, twitch_user)
-               VALUES (?, ?, ?)
+            """INSERT INTO twitch_links (
+                   discord_id, guild_id, twitch_user, last_interaction_channel_id
+               ) VALUES (?, ?, ?, ?)
                ON CONFLICT(discord_id, guild_id)
                DO UPDATE SET twitch_user = excluded.twitch_user,
+                             last_interaction_channel_id = excluded.last_interaction_channel_id,
+                             last_top_drop_id = NULL,
                              linked_at = CURRENT_TIMESTAMP""",
-            (discord_id, guild_id, canonical),
+            (discord_id, guild_id, canonical, channel_id),
         )
 
     async def unlink_twitch(self, discord_id: str, guild_id: str) -> bool:
@@ -156,4 +188,39 @@ class Database:
         return await self._fetchone(
             "SELECT * FROM twitch_links WHERE discord_id = ? AND guild_id = ?",
             (discord_id, guild_id),
+        )
+
+    async def iter_links_with_state(self) -> list[LinkState]:
+        rows = await self._fetchall(
+            """SELECT discord_id, guild_id, twitch_user,
+                      last_interaction_channel_id, last_top_drop_id
+               FROM twitch_links"""
+        )
+        return [
+            LinkState(
+                discord_id=r["discord_id"],
+                guild_id=r["guild_id"],
+                twitch_user=r["twitch_user"],
+                last_interaction_channel_id=r["last_interaction_channel_id"],
+                last_top_drop_id=r["last_top_drop_id"],
+            )
+            for r in rows
+        ]
+
+    async def set_last_interaction_channel(
+        self, discord_id: str, guild_id: str, channel_id: str
+    ) -> None:
+        await self._execute(
+            """UPDATE twitch_links SET last_interaction_channel_id = ?
+               WHERE discord_id = ? AND guild_id = ?""",
+            (channel_id, discord_id, guild_id),
+        )
+
+    async def set_last_top_drop(
+        self, discord_id: str, guild_id: str, drop_id: str
+    ) -> None:
+        await self._execute(
+            """UPDATE twitch_links SET last_top_drop_id = ?
+               WHERE discord_id = ? AND guild_id = ?""",
+            (drop_id, discord_id, guild_id),
         )
