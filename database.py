@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import re
 from typing import Optional
 
 from config import DATABASE_PATH
@@ -22,7 +23,15 @@ CREATE TABLE IF NOT EXISTS player_accounts (
     added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (discord_id, guild_id, battletag)
 );
+CREATE TABLE IF NOT EXISTS twitch_links (
+    discord_id  TEXT NOT NULL,
+    guild_id    TEXT NOT NULL,
+    twitch_user TEXT NOT NULL,
+    linked_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (discord_id, guild_id)
+);
 CREATE INDEX IF NOT EXISTS idx_players_guild ON players(guild_id);
+CREATE INDEX IF NOT EXISTS idx_twitch_links_user ON twitch_links(twitch_user);
 """
 
 
@@ -108,5 +117,43 @@ class Database:
     async def get_accounts(self, discord_id: str, guild_id: str) -> list[dict]:
         return await self._fetchall(
             "SELECT * FROM player_accounts WHERE discord_id=? AND guild_id=? ORDER BY added_at",
+            (discord_id, guild_id),
+        )
+
+    # ── twitch_links (Discord ↔ Twitch self-reported binding) ────────────
+    _TWITCH_USER_RE = re.compile(r"^[a-z0-9_]{3,25}$")
+
+    @classmethod
+    def _canonical_twitch_user(cls, raw: str) -> str:
+        """Strip + lowercase + regex validate. Raises ValueError if invalid."""
+        canonical = raw.strip().lower()
+        if not cls._TWITCH_USER_RE.match(canonical):
+            raise ValueError(
+                f"Twitch username '{raw}' invalid after normalization "
+                f"(must match {cls._TWITCH_USER_RE.pattern})"
+            )
+        return canonical
+
+    async def link_twitch(self, discord_id: str, guild_id: str, twitch_user: str) -> None:
+        canonical = self._canonical_twitch_user(twitch_user)
+        await self._execute(
+            """INSERT INTO twitch_links (discord_id, guild_id, twitch_user)
+               VALUES (?, ?, ?)
+               ON CONFLICT(discord_id, guild_id)
+               DO UPDATE SET twitch_user = excluded.twitch_user,
+                             linked_at = CURRENT_TIMESTAMP""",
+            (discord_id, guild_id, canonical),
+        )
+
+    async def unlink_twitch(self, discord_id: str, guild_id: str) -> bool:
+        count = await self._execute(
+            "DELETE FROM twitch_links WHERE discord_id = ? AND guild_id = ?",
+            (discord_id, guild_id),
+        )
+        return count > 0
+
+    async def get_twitch_link(self, discord_id: str, guild_id: str) -> dict | None:
+        return await self._fetchone(
+            "SELECT * FROM twitch_links WHERE discord_id = ? AND guild_id = ?",
             (discord_id, guild_id),
         )
