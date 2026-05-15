@@ -137,13 +137,19 @@ class MinerCog(commands.Cog):
     def _build_embed(
         self,
         canonical: str,
-        status_data: dict,
+        status_data: dict | None,
         campaigns_data: dict,
     ) -> discord.Embed:
-        status_text = status_data.get("status", "(unknown)")
-        login = status_data.get("login", {}) or {}
-        login_status = (login.get("status") or "")
-        is_logged_in = "已登录" in login_status or "logged" in login_status.lower()
+        # status_data is None when called by notifier_loop._push_notification —
+        # in that case we skip the status string entirely and show a fixed label.
+        if status_data is None:
+            status_text = ""
+            is_logged_in = True   # in notifier path, miner is alive enough to return campaigns
+        else:
+            status_text = status_data.get("status", "(unknown)")
+            login = status_data.get("login", {}) or {}
+            login_status = (login.get("status") or "")
+            is_logged_in = "已登录" in login_status or "logged" in login_status.lower()
 
         campaigns = campaigns_data.get("campaigns", []) or []
         linked_active = [
@@ -173,22 +179,27 @@ class MinerCog(commands.Cog):
                     })
         in_progress.sort(key=lambda x: x["progress"], reverse=True)
 
-        # Status color/emoji
-        is_watching = "正在观看" in status_text or "watching" in status_text.lower()
-        if is_watching and in_progress:
-            emoji, status_label, color = "🟢", "Watching", 0x9146FF
-        elif is_logged_in:
-            emoji, status_label, color = "🟡", "Idle", 0xFFC107
+        # Decide status presentation
+        if status_data is None:
+            # notifier path: we know there's a top drop and miner is responsive
+            emoji, status_label, color = "🟢", "正在挂宝", 0x9146FF
         else:
-            emoji, status_label, color = "🔴", "Disconnected", 0xFF4444
+            is_watching = "正在观看" in status_text or "watching" in status_text.lower()
+            if is_watching and in_progress:
+                emoji, status_label, color = "🟢", "正在挂宝", 0x9146FF
+            elif is_logged_in:
+                emoji, status_label, color = "🟡", "空闲", 0xFFC107
+            else:
+                emoji, status_label, color = "🔴", "离线", 0xFF4444
 
         embed = discord.Embed(
             title=f"🎮 Twitch Drops Miner — {canonical}",
             color=color,
         )
+        status_value = f"{emoji} {status_label}" + (f"\n{status_text}" if status_text else "")
         embed.add_field(
-            name="Status",
-            value=f"{emoji} {status_label}\n{status_text}",
+            name="状态",
+            value=status_value,
             inline=False,
         )
 
@@ -197,12 +208,12 @@ class MinerCog(commands.Cog):
             bar_filled = max(0, min(12, int(top["progress"] * 12)))
             bar = "█" * bar_filled + "░" * (12 - bar_filled)
             embed.add_field(
-                name="Current Drop",
+                name="当前 Drop",
                 value=f"**{top['drop_name']}** _(in {top['game']} — {top['campaign']})_",
                 inline=False,
             )
             embed.add_field(
-                name="Progress",
+                name="进度",
                 value=f"`{bar}` {top['current_min']}/{top['required_min']} min ({top['progress']*100:.0f}%)",
                 inline=False,
             )
@@ -211,21 +222,21 @@ class MinerCog(commands.Cog):
                     f"• **{d['drop_name']}** — {d['progress']*100:.0f}%"
                     for d in in_progress[1:4]
                 )
-                embed.add_field(name="Also in progress", value=others, inline=False)
+                embed.add_field(name="同时在挂", value=others, inline=False)
         else:
             embed.add_field(
-                name="Current Drop",
-                value="No active drop in progress",
+                name="当前 Drop",
+                value="当前没有 drop 在挂",
                 inline=False,
             )
 
         embed.add_field(
-            name="Eligible campaigns",
+            name="可挂活动",
             value=f"{len(linked_active)}",
             inline=True,
         )
         embed.set_footer(
-            text=f"Source: miner /api/* @ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+            text=f"来源:miner /api/* @ {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
         )
         return embed
 
