@@ -24,6 +24,7 @@ _COGS = [
     "cogs.identity",
     "cogs.hero",
     "cogs.twitch_link",
+    "cogs.miner",
 ]
 
 
