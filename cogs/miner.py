@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import aiohttp
 import discord
@@ -62,6 +63,31 @@ def compute_top_drop(campaigns_data: dict) -> dict | None:
         return None
     in_progress.sort(key=lambda x: x["progress"], reverse=True)
     return in_progress[0]
+
+
+def _usable_image_url(value: object) -> str | None:
+    """Return value as a clean http(s) URL Discord can render, else None.
+
+    Discord rejects an embed whose image url is not a well-formed http(s) URL
+    with 50035 (Invalid Form Body), which fails the WHOLE message. We validate
+    scheme + host and reject embedded whitespace so a garbage/drifted url
+    degrades to "no thumbnail" instead of a dropped notification. Twitch CDN
+    always returns clean https; this guards against miner payload drift, not
+    adversarial input. (Discord also accepts attachment:// — out of scope, our
+    only source is the CDN.)
+    """
+    if not isinstance(value, str):
+        return None
+    url = value.strip()
+    if not url or any(ch.isspace() for ch in url):
+        return None
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # e.g. "https://[bad" (unterminated IPv6) raises
+        return None
+    if parts.scheme in ("http", "https") and parts.netloc:
+        return url
+    return None
 
 
 class MinerCog(commands.Cog):
