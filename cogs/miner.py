@@ -245,6 +245,7 @@ class MinerCog(commands.Cog):
                         "required_min": d.get("required_minutes") or 0,
                         "progress": float(d.get("progress") or 0.0),
                         "can_claim": bool(d.get("can_claim")),
+                        "image_url": _benefit_image_url(d),
                     })
         in_progress.sort(key=lambda x: x["progress"], reverse=True)
 
@@ -274,6 +275,8 @@ class MinerCog(commands.Cog):
 
         if in_progress:
             top = in_progress[0]
+            if top.get("image_url"):
+                embed.set_thumbnail(url=top["image_url"])
             bar_filled = max(0, min(12, int(top["progress"] * 12)))
             bar = "█" * bar_filled + "░" * (12 - bar_filled)
             embed.add_field(

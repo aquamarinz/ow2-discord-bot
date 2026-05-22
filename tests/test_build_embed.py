@@ -32,15 +32,29 @@ def _campaigns(in_progress_drop=None, n_linked_active=1):
     return {"campaigns": campaigns}
 
 
+def _campaigns_with_drops(drops):
+    """campaigns_data with one linked+active campaign holding the given drops."""
+    return {"campaigns": [{
+        "name": "OWCS S1",
+        "game_name": "Overwatch",
+        "linked": True,
+        "active": True,
+        "drops": drops,
+    }]}
+
+
 def _drop(id="d1", current_minutes=120, required_minutes=180, progress=0.667,
-          is_claimed=False, name="Zenyatta Spray"):
-    return {
+          is_claimed=False, name="Zenyatta Spray", benefits=None):
+    d = {
         "id": id, "name": name,
         "current_minutes": current_minutes,
         "required_minutes": required_minutes,
         "progress": progress,
         "is_claimed": is_claimed,
     }
+    if benefits is not None:
+        d["benefits"] = benefits
+    return d
 
 
 def _texts(embed):
@@ -104,3 +118,52 @@ def test_build_embed_status_data_none_fallback(cog):
     text = _texts(embed)
     assert "🟢 正在挂宝" in text                  # fallback label
     assert "Zenyatta Spray" in text             # drop name still rendered
+
+
+def test_build_embed_sets_thumbnail_when_image(cog):
+    """/miner path (status_data dict): top drop image becomes the thumbnail."""
+    status_data = {"status": "正在观看: ch", "login": {"status": "已登录"}}
+    drop = _drop(progress=0.7,
+                 benefits=[{"name": "Skin", "image_url": "https://cdn.example/skin.png"}])
+    embed = cog._build_embed("user", status_data, _campaigns(in_progress_drop=drop))
+    assert embed.thumbnail.url == "https://cdn.example/skin.png"
+
+
+def test_build_embed_no_thumbnail_when_no_image(cog):
+    """Top drop without a benefit image -> no thumbnail, no crash."""
+    drop = _drop(progress=0.7)  # no benefits
+    embed = cog._build_embed("user", None, _campaigns(in_progress_drop=drop))
+    assert embed.thumbnail.url is None
+
+
+def test_build_embed_no_thumbnail_when_no_in_progress(cog):
+    """No in-progress drop -> no thumbnail."""
+    embed = cog._build_embed("user", None, _campaigns(in_progress_drop=None))
+    assert embed.thumbnail.url is None
+
+
+def test_build_embed_thumbnail_follows_top_drop(cog):
+    """Thumbnail = highest-progress drop's image, not just any drop with one."""
+    low = _drop(id="dLow", progress=0.3, name="Low",
+                benefits=[{"name": "A", "image_url": "https://cdn.example/a.png"}])
+    high = _drop(id="dHigh", progress=0.8, name="High",
+                 benefits=[{"name": "B", "image_url": "https://cdn.example/b.png"}])
+    embed = cog._build_embed("user", None, _campaigns_with_drops([low, high]))
+    assert embed.thumbnail.url == "https://cdn.example/b.png"
+
+
+def test_build_embed_no_thumbnail_when_top_has_none_but_lower_has_image(cog):
+    """Top drop has no image; do NOT fall back to a lower drop's image."""
+    low = _drop(id="dLow", progress=0.3, name="Low",
+                benefits=[{"name": "A", "image_url": "https://cdn.example/a.png"}])
+    high = _drop(id="dHigh", progress=0.8, name="High")  # no benefits -> no image
+    embed = cog._build_embed("user", None, _campaigns_with_drops([low, high]))
+    assert embed.thumbnail.url is None
+
+
+def test_build_embed_thumbnail_in_notifier_path(cog):
+    """Notifier path (status_data=None): thumbnail still set."""
+    drop = _drop(progress=0.7,
+                 benefits=[{"name": "Skin", "image_url": "https://cdn.example/skin.png"}])
+    embed = cog._build_embed("user", None, _campaigns(in_progress_drop=drop))
+    assert embed.thumbnail.url == "https://cdn.example/skin.png"
