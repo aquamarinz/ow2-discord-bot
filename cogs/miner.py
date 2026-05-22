@@ -90,6 +90,23 @@ def _usable_image_url(value: object) -> str | None:
     return None
 
 
+def _benefit_image_url(drop: dict) -> str | None:
+    """First usable benefit image URL of a drop, else None.
+
+    Defensive against miner payload shape drift (benefits not a list, an item
+    not a dict) so a cosmetic thumbnail can never crash the embed build.
+    """
+    benefits = drop.get("benefits")
+    if not isinstance(benefits, list):
+        return None
+    for b in benefits:
+        if isinstance(b, dict):
+            url = _usable_image_url(b.get("image_url"))
+            if url:
+                return url
+    return None
+
+
 class MinerCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
