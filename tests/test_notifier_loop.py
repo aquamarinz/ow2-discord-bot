@@ -63,17 +63,20 @@ def patch_twitch_miners(monkeypatch):
 
 
 def _campaigns_payload(top_drop_id="d1", progress=0.5, name="Drop1", in_progress=True,
-                       in_progress_extra=None):
+                       in_progress_extra=None, benefits=None):
     drops = []
     if in_progress:
-        drops.append({
+        drop = {
             "id": top_drop_id,
             "name": name,
             "current_minutes": 60,
             "required_minutes": 120,
             "progress": progress,
             "is_claimed": False,
-        })
+        }
+        if benefits is not None:
+            drop["benefits"] = benefits
+        drops.append(drop)
     if in_progress_extra:
         drops.extend(in_progress_extra)
     return {
@@ -134,14 +137,21 @@ async def test_notifier_change_sends(cog, mock_channel, patch_twitch_miners):
     await _seed_link(cog.bot.db, last_top_drop_id="d_old")
     with aioresponses() as m:
         m.get("http://localhost:8080/api/campaigns",
-              payload=_campaigns_payload(top_drop_id="d_new", name="NewDrop"))
+              payload=_campaigns_payload(
+                  top_drop_id="d_new",
+                  name="NewDrop",
+                  benefits=[{"name": "X", "image_url": "https://cdn.example/n.png"}],
+              ))
         await cog.notifier_loop.coro(cog)
     assert mock_channel.send.call_count == 1
     call = mock_channel.send.call_args
     assert "<@u1>" in call.kwargs["content"]
     assert "NewDrop" in call.kwargs["content"]
     assert "切到新挂宝目标" in call.kwargs["content"]
-    assert isinstance(call.kwargs["embed"], discord.Embed)
+    sent_embed = call.kwargs["embed"]
+    assert isinstance(sent_embed, discord.Embed)
+    assert sent_embed.image.url == "https://cdn.example/n.png"
+    assert sent_embed.thumbnail.url is None
     rows = await cog.bot.db.iter_links_with_state()
     assert rows[0].last_top_drop_id == "d_new"
 

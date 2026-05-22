@@ -208,6 +208,7 @@ class MinerCog(commands.Cog):
         canonical: str,
         status_data: dict | None,
         campaigns_data: dict,
+        large_image: bool = False,
     ) -> discord.Embed:
         # status_data is None when called by notifier_loop._push_notification —
         # in that case we skip the status string entirely and show a fixed label.
@@ -276,7 +277,10 @@ class MinerCog(commands.Cog):
         if in_progress:
             top = in_progress[0]
             if top.get("image_url"):
-                embed.set_thumbnail(url=top["image_url"])
+                if large_image:
+                    embed.set_image(url=top["image_url"])
+                else:
+                    embed.set_thumbnail(url=top["image_url"])
             bar_filled = max(0, min(12, int(top["progress"] * 12)))
             bar = "█" * bar_filled + "░" * (12 - bar_filled)
             embed.add_field(
@@ -430,7 +434,12 @@ class MinerCog(commands.Cog):
             f"<@{link.discord_id}> 切到新挂宝目标:**{top['drop_name']}** "
             f"_({top['game']} — {top['campaign']})_"
         )
-        embed = self._build_embed(link.twitch_user, status_data=None, campaigns_data=data)
+        embed = self._build_embed(
+            link.twitch_user,
+            status_data=None,
+            campaigns_data=data,
+            large_image=True,
+        )
         try:
             await channel.send(content=content, embed=embed)
         except discord.Forbidden:

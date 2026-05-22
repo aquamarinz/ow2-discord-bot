@@ -129,6 +129,16 @@ def test_build_embed_sets_thumbnail_when_image(cog):
     assert embed.thumbnail.url == "https://cdn.example/skin.png"
 
 
+def test_build_embed_large_image_uses_set_image(cog):
+    """large_image=True -> reward image goes to set_image (big), not thumbnail."""
+    drop = _drop(progress=0.7,
+                 benefits=[{"name": "Skin", "image_url": "https://cdn.example/skin.png"}])
+    embed = cog._build_embed("user", None,
+                             _campaigns(in_progress_drop=drop), large_image=True)
+    assert embed.image.url == "https://cdn.example/skin.png"
+    assert embed.thumbnail.url is None
+
+
 def test_build_embed_no_thumbnail_when_no_image(cog):
     """Top drop without a benefit image -> no thumbnail, no crash."""
     drop = _drop(progress=0.7)  # no benefits
@@ -161,9 +171,11 @@ def test_build_embed_no_thumbnail_when_top_has_none_but_lower_has_image(cog):
     assert embed.thumbnail.url is None
 
 
-def test_build_embed_thumbnail_in_notifier_path(cog):
-    """Notifier path (status_data=None): thumbnail still set."""
+def test_build_embed_notifier_path_uses_large_image(cog):
+    """Notifier path requests large_image=True -> big image, no thumbnail."""
     drop = _drop(progress=0.7,
                  benefits=[{"name": "Skin", "image_url": "https://cdn.example/skin.png"}])
-    embed = cog._build_embed("user", None, _campaigns(in_progress_drop=drop))
-    assert embed.thumbnail.url == "https://cdn.example/skin.png"
+    embed = cog._build_embed("user", None,
+                             _campaigns(in_progress_drop=drop), large_image=True)
+    assert embed.image.url == "https://cdn.example/skin.png"
+    assert embed.thumbnail.url is None
