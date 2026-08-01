@@ -208,6 +208,43 @@ def diff_tick(
     return new_state, claim_groups, campaign_events
 
 
+def _fit_budget(content: str, total: int) -> str:
+    """Clamp content to NOTIFY_CONTENT_BUDGET with a '…等 N 个' tail (§3.3)."""
+    if len(content) <= NOTIFY_CONTENT_BUDGET:
+        return content
+    tail = f"…等 {total} 个"
+    return content[:NOTIFY_CONTENT_BUDGET - len(tail)] + tail
+
+
+def build_claim_message(discord_id: str, claim_groups: list[dict]) -> tuple[str, str | None]:
+    """(content, image_url) for a 🎉 claim message.
+
+    First campaign group sits inline after the colon (spec §3.5 template);
+    additional campaigns get one line each.
+    """
+    total = 0
+    group_lines = []
+    for g in claim_groups:
+        total += len(g["drops"])
+        names = "、".join(f"**{n}**" for n in g["drops"])
+        done = " ✅ 全部领完" if g["done"] else ""
+        group_lines.append(f"{names} _({g['campaign']})_{done}")
+    content = f"<@{discord_id}> 🎉 已领取掉宝:" + "\n".join(group_lines)
+    image_url = next((g["image_url"] for g in claim_groups if g["image_url"]), None)
+    return _fit_budget(content, total), image_url
+
+
+def build_campaign_message(discord_id: str, campaign_events: list[dict]) -> str:
+    """Content for a ⛏️ new-campaign message. All events joined on one line."""
+    parts = "、".join(
+        f"**{e['campaign']}** _({e['game']} · {e['drop_count']} 个掉宝)_"
+        for e in campaign_events
+    )
+    return _fit_budget(
+        f"<@{discord_id}> ⛏️ 开始挖新活动:{parts}", len(campaign_events)
+    )
+
+
 class MinerCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
