@@ -3,7 +3,8 @@
 Reads HTTP API of rangermix miner (no socket.io). The /miner command does a
 one-shot fetch and replies ephemerally. The notifier_loop runs every 60s in
 the background, polling /api/campaigns per twitch_links row, and pushes a
-channel message + @user mention when the top in-progress drop_id changes.
+channel message + @user mention only for newly claimed drops and newly
+started campaigns (no per-drop switch spam).
 """
 from __future__ import annotations
 import asyncio
@@ -23,46 +24,6 @@ logger = logging.getLogger(__name__)
 
 HTTP_TIMEOUT_SECONDS = 5
 NOTIFIER_LOOP_SECONDS = 60
-
-
-def compute_top_drop(campaigns_data: dict) -> dict | None:
-    """Return top in-progress drop (highest progress) or None.
-
-    Returned dict contains: id, drop_name, game, campaign,
-    current_min, required_min, progress (float 0.0-1.0).
-
-    Caller semantics (spec §9, D12):
-    - None means no in-progress drop; caller MUST keep db's last_top_drop_id
-      unchanged. idle-pause-resume becomes "switch" via the next non-None tick.
-    - Non-None with id != db last_top_drop_id is a switch. Covers both
-      old-completed→new-started and old-campaign-expired→new-started.
-
-    Drops with falsy id are skipped to avoid set_last_top_drop(None) wiping
-    the row back to bootstrap state.
-    """
-    campaigns = campaigns_data.get("campaigns", []) or []
-    in_progress: list[dict] = []
-    for c in campaigns:
-        if not (c.get("linked") and c.get("active")):
-            continue
-        for d in c.get("drops", []) or []:
-            drop_id = d.get("id")
-            if not drop_id:
-                continue
-            if (d.get("current_minutes") or 0) > 0 and not d.get("is_claimed"):
-                in_progress.append({
-                    "id": drop_id,
-                    "drop_name": d.get("name") or "?",
-                    "game": c.get("game_name") or "?",
-                    "campaign": c.get("name") or "?",
-                    "current_min": d.get("current_minutes") or 0,
-                    "required_min": d.get("required_minutes") or 0,
-                    "progress": float(d.get("progress") or 0.0),
-                })
-    if not in_progress:
-        return None
-    in_progress.sort(key=lambda x: x["progress"], reverse=True)
-    return in_progress[0]
 
 
 def _usable_image_url(value: object) -> str | None:
@@ -249,6 +210,9 @@ class MinerCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._session: aiohttp.ClientSession | None = None
+        # (discord_id, guild_id, twitch_user) -> {"drops": dict, "mining": set}
+        # In-memory only: restart re-baselines silently (spec §3.1).
+        self._notify_state: dict[tuple[str, str, str], dict] = {}
 
     async def cog_load(self) -> None:
         self._session = aiohttp.ClientSession(
@@ -365,8 +329,8 @@ class MinerCog(commands.Cog):
         ]
 
         # Find drops with progress > 0 and not yet claimed.
-        # Inline rather than reuse compute_top_drop because we need can_claim
-        # field and the ordered list (for "Also in progress" section).
+        # Collect in-progress drops with can_claim and the ordered list
+        # (for the "Also in progress" section).
         in_progress = []
         for c in linked_active:
             for d in c.get("drops", []) or []:
@@ -451,12 +415,17 @@ class MinerCog(commands.Cog):
         return embed
 
     # ─────────────────────────────────────────────────────────────────
-    # Background notifier loop (drop-switch push notifications)
+    # Background notifier loop (claim / new-campaign push notifications)
     # ─────────────────────────────────────────────────────────────────
 
     @tasks.loop(seconds=NOTIFIER_LOOP_SECONDS)
     async def notifier_loop(self) -> None:
         links = await self.bot.db.iter_links_with_state()
+        live_keys = {
+            (l.discord_id, l.guild_id, l.twitch_user) for l in links
+        }
+        for stale in set(self._notify_state) - live_keys:
+            del self._notify_state[stale]
         for link in links:
             try:
                 await self._process_link(link)
@@ -488,8 +457,7 @@ class MinerCog(commands.Cog):
         )
 
     async def _process_link(self, link: LinkState) -> None:
-        # Codex round-2 note 2: guard against the session being closed mid-tick
-        # by cog_unload.
+        # Guard against the session being closed mid-tick by cog_unload.
         if self._session is None or self._session.closed:
             return
 
@@ -500,54 +468,33 @@ class MinerCog(commands.Cog):
         container, port = miner
         base_url = f"http://{container}:{port}"
 
-        # — network layer —
         try:
             data = await self._fetch_json(self._session, f"{base_url}/api/campaigns")
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
-            # ValueError covers json.JSONDecodeError when body is invalid JSON;
-            # aiohttp.ContentTypeError is a ClientError subclass (already covered).
             logger.info("notifier: miner %s unreachable/invalid: %s", link.twitch_user, e)
             return
 
-        # — data layer —
-        try:
-            top = compute_top_drop(data)
-        except Exception as e:
-            logger.error(
-                "notifier: compute_top_drop failed for twitch=%s: %s",
-                link.twitch_user, e,
-            )
+        key = (link.discord_id, link.guild_id, link.twitch_user)
+        result = diff_tick(self._notify_state.get(key), data)
+        if result is None:
+            # Malformed payload — treat like unreachable: keep old state.
+            logger.info("notifier: miner %s returned malformed payload", link.twitch_user)
             return
+        new_state, claim_groups, campaign_events = result
+        self._notify_state[key] = new_state
 
-        if top is None:
-            # No in-progress drop. Per D12: preserve db's last_top_drop_id.
-            # The next non-None top different from db will be a switch.
-            return
-
-        if top["id"] == link.last_top_drop_id:
-            return  # no change
-
-        # — notification decision —
-        should_notify = (
-            link.last_top_drop_id is not None  # silent bootstrap on NULL
-            and link.last_interaction_channel_id  # dormant rows have no channel yet
-        )
-        if should_notify:
-            await self._push_notification(link, top, data)
-
-        # — db update —
-        try:
-            await self.bot.db.set_last_top_drop(
-                link.discord_id, link.guild_id, top["id"]
-            )
-        except Exception as e:
-            logger.error(
-                "notifier: db.set_last_top_drop failed for user=%s guild=%s: %s",
-                link.discord_id, link.guild_id, e,
+        if not link.last_interaction_channel_id:
+            return  # dormant row: keep the baseline fresh, never send
+        if claim_groups:
+            content, image_url = build_claim_message(link.discord_id, claim_groups)
+            await self._push_notification(link, content, image_url)
+        if campaign_events:
+            await self._push_notification(
+                link, build_campaign_message(link.discord_id, campaign_events), None
             )
 
     async def _push_notification(
-        self, link: LinkState, top: dict, data: dict
+        self, link: LinkState, content: str, image_url: str | None
     ) -> None:
         try:
             channel_id_int = int(link.last_interaction_channel_id)
@@ -564,15 +511,10 @@ class MinerCog(commands.Cog):
                 link.last_interaction_channel_id, link.discord_id, link.guild_id,
             )
             return
-        content = (
-            f"<@{link.discord_id}> 切到新挂宝目标:**{top['drop_name']}** "
-            f"_({top['game']} — {top['campaign']})_"
-        )
-        embed = self._build_embed(
-            link.twitch_user,
-            status_data=None,
-            campaigns_data=data,
-        )
+        embed = None
+        if image_url:
+            embed = discord.Embed(color=0x9146FF)
+            embed.set_image(url=image_url)
         try:
             await channel.send(content=content, embed=embed)
         except discord.Forbidden:
