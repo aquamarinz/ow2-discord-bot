@@ -107,6 +107,106 @@ def _benefit_image_url(drop: dict) -> str | None:
     return None
 
 
+NOTIFY_CONTENT_BUDGET = 1800
+DROPS_STATE_CAP = 2000
+MINING_STATE_CAP = 500
+
+
+def diff_tick(
+    state: dict | None,
+    payload: object,
+) -> tuple[dict, list[dict], list[dict]] | None:
+    """One notifier tick as a pure state transition.
+
+    state:   {"drops": dict[str, bool], "mining": set[str]} or None (first tick).
+    payload: raw /api/campaigns JSON (untrusted shape).
+
+    Returns None when payload is invalid (caller must skip the tick and keep
+    old state), else (new_state, claim_groups, campaign_events):
+      claim_groups:    [{"campaign": str, "drops": [str], "done": bool,
+                         "image_url": str | None}]
+      campaign_events: [{"campaign": str, "game": str, "drop_count": int}]
+    Both event lists are always [] when state is None (silent baseline).
+
+    Semantics (spec §3.1/3.2): claim = seen-unclaimed→claimed transition,
+    detected across ALL campaigns (no linked/active filter, so end-of-campaign
+    claims still fire). "mining" is append-only: a campaign is announced at
+    most once. Drop memory merges (absent entries retained) so partial or
+    transiently-empty payloads never cause false or lost events.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("campaigns"), list):
+        return None
+    baseline = state is None
+    prev_drops: dict[str, bool] = {} if baseline else state["drops"]
+    prev_mining: set[str] = set() if baseline else state["mining"]
+
+    cur_drops: dict[str, bool] = {}
+    present_campaigns: set[str] = set()
+    mining_candidates: set[str] = set()
+    claim_groups: list[dict] = []
+    campaign_events: list[dict] = []
+
+    for c in payload["campaigns"]:
+        if not isinstance(c, dict):
+            continue
+        cid = c.get("id")
+        if not cid:
+            continue
+        present_campaigns.add(cid)
+        drops = c.get("drops")
+        if not isinstance(drops, list):
+            drops = []
+        newly_claimed: list[str] = []
+        image_url: str | None = None
+        n_valid = n_claimed = 0
+        has_progress = False
+        for d in drops:
+            if not isinstance(d, dict):
+                continue
+            did = d.get("id")
+            if not did:
+                continue
+            n_valid += 1
+            claimed = bool(d.get("is_claimed"))
+            if claimed:
+                n_claimed += 1
+            if claimed or (d.get("current_minutes") or 0) > 0:
+                has_progress = True
+            cur_drops[did] = claimed
+            if claimed and prev_drops.get(did) is False:
+                newly_claimed.append(d.get("name") or "?")
+                if image_url is None:
+                    image_url = _benefit_image_url(d)
+        if newly_claimed:
+            claim_groups.append({
+                "campaign": c.get("name") or "?",
+                "drops": newly_claimed,
+                "done": n_valid > 0 and n_claimed == n_valid,
+                "image_url": image_url,
+            })
+        if c.get("active") and has_progress:
+            mining_candidates.add(cid)
+            if cid not in prev_mining:
+                campaign_events.append({
+                    "campaign": c.get("name") or "?",
+                    "game": c.get("game_name") or "?",
+                    "drop_count": n_valid,
+                })
+
+    merged_drops = {**prev_drops, **cur_drops}
+    merged_mining = prev_mining | mining_candidates
+    # Hygiene caps: unbounded growth is impossible in practice; sweep to
+    # payload-present entries only when a cap is exceeded (spec §3.1).
+    if len(merged_drops) > DROPS_STATE_CAP:
+        merged_drops = dict(cur_drops)
+    if len(merged_mining) > MINING_STATE_CAP:
+        merged_mining = merged_mining & present_campaigns
+    new_state = {"drops": merged_drops, "mining": merged_mining}
+    if baseline:
+        return new_state, [], []
+    return new_state, claim_groups, campaign_events
+
+
 class MinerCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
