@@ -118,10 +118,30 @@ async def test_baseline_then_claim_pushes_once(cog, mock_channel, patch_twitch_m
 
 @pytest.mark.asyncio
 async def test_no_events_no_send(cog, mock_channel, patch_twitch_miners):
-    """Progress changes without claims/new campaigns → 0 pushes (spec test 5)."""
+    """Switch-regression sentinel: a top-drop flip without events sends nothing."""
     await _seed_link(cog.bot.db)
-    await _tick(cog, _payload((False, False)))
-    await _tick(cog, _payload((False, False), minutes=90))
+    tick1 = {"campaigns": [{
+        "id": "c1", "name": "OWCS Day 3", "game_name": "Overwatch",
+        "linked": True, "active": True,
+        "drops": [
+            {"id": "d0", "name": "Drop0", "is_claimed": False,
+             "current_minutes": 60, "required_minutes": 120, "progress": 0.5},
+            {"id": "d1", "name": "Drop1", "is_claimed": False,
+             "current_minutes": 24, "required_minutes": 120, "progress": 0.2},
+        ],
+    }]}
+    tick2 = {"campaigns": [{
+        "id": "c1", "name": "OWCS Day 3", "game_name": "Overwatch",
+        "linked": True, "active": True,
+        "drops": [
+            {"id": "d0", "name": "Drop0", "is_claimed": False,
+             "current_minutes": 66, "required_minutes": 120, "progress": 0.55},
+            {"id": "d1", "name": "Drop1", "is_claimed": False,
+             "current_minutes": 108, "required_minutes": 120, "progress": 0.9},
+        ],
+    }]}
+    await _tick(cog, tick1)
+    await _tick(cog, tick2)
     mock_channel.send.assert_not_awaited()
 
 
