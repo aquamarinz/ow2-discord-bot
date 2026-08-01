@@ -150,7 +150,7 @@ def diff_tick(
         if not isinstance(c, dict):
             continue
         cid = c.get("id")
-        if not cid:
+        if not isinstance(cid, str) or not cid:
             continue
         present_campaigns.add(cid)
         drops = c.get("drops")
@@ -164,13 +164,14 @@ def diff_tick(
             if not isinstance(d, dict):
                 continue
             did = d.get("id")
-            if not did:
+            if not isinstance(did, str) or not did:
                 continue
             n_valid += 1
             claimed = bool(d.get("is_claimed"))
             if claimed:
                 n_claimed += 1
-            if claimed or (d.get("current_minutes") or 0) > 0:
+            minutes = d.get("current_minutes")
+            if claimed or (isinstance(minutes, (int, float)) and minutes > 0):
                 has_progress = True
             cur_drops[did] = claimed
             if claimed and prev_drops.get(did) is False:

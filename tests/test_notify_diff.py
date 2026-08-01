@@ -147,6 +147,23 @@ def test_missing_ids_skipped_not_crash():
     assert claims == [] and camps == []
 
 
+def test_non_string_ids_skipped_not_crash():
+    p = _payload(_c(cid=[1], drops=[_d()]),
+                 _c(drops=[_d(did=123), _d(did="d2")]))
+    st, claims, camps = diff_tick(None, p)
+    assert st["drops"] == {"d2": False}
+    assert st["mining"] == {"c1"}
+    assert claims == [] and camps == []
+
+
+def test_non_numeric_current_minutes_is_not_progress():
+    st, claims, camps = diff_tick(
+        None, _payload(_c(drops=[_d(minutes="1")])))
+    assert st["drops"] == {"d1": False}
+    assert st["mining"] == set()
+    assert claims == [] and camps == []
+
+
 # ── hygiene caps (§3.1) ─────────────────────────────────────────────
 
 def test_drops_cap_sweeps_absent_entries():
