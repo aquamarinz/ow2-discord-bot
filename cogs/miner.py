@@ -9,8 +9,9 @@ started campaigns (no per-drop switch spam).
 from __future__ import annotations
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import aiohttp
 import discord
@@ -68,9 +69,24 @@ def _benefit_image_url(drop: dict) -> str | None:
     return None
 
 
+def _hd_box_art_url(value: object) -> str | None:
+    """Validated box-art URL upscaled to 600x800 via the Twitch CDN size
+    suffix (`...-120x160.jpg` → `...-600x800.jpg`).
+
+    The CDN serves box art at any requested WxH; no suffix to rewrite means
+    the URL is returned as-is (cosmetic degradation only). Invalid → None.
+    """
+    url = _usable_image_url(value)
+    if url is None:
+        return None
+    return re.sub(r"-\d+x\d+(\.[A-Za-z]+)$", r"-600x800\1", url)
+
+
 NOTIFY_CONTENT_BUDGET = 1800
 DROPS_STATE_CAP = 2000
 MINING_STATE_CAP = 500
+MENTION_CAP = 10
+_DROPS_CAMPAIGNS_URL = "https://www.twitch.tv/drops/campaigns"
 
 
 def diff_tick(
@@ -215,15 +231,58 @@ def build_claim_message(discord_id: str, claim_groups: list[dict]) -> tuple[str,
     return _fit_budget(content, total), image_url
 
 
-def build_campaign_message(discord_id: str, campaign_events: list[dict]) -> str:
-    """Content for a ⛏️ new-campaign message. All events joined on one line."""
-    parts = "、".join(
-        f"**{e['campaign']}** _({e['game']} · {e['drop_count']} 个掉宝)_"
-        for e in campaign_events
+def build_campaign_announce(
+    mention_ids: list[str], event: dict
+) -> tuple[str, list[discord.Embed]]:
+    """(content, embeds) for one guild-wide campaign-launch announcement.
+
+    Gallery trick: up to 4 embeds sharing the same `url` render client-side
+    as ONE embed with a 2x2 image grid. mention_ids must be pre-deduped by
+    the caller; it is capped here (MENTION_CAP) so the campaign name at the
+    tail can never be truncated away — no prefix slicing of content.
+    """
+    ment = " ".join(f"<@{m}>" for m in mention_ids[:MENTION_CAP])
+    if len(mention_ids) > MENTION_CAP:
+        ment += f" 等 {len(mention_ids)} 人"
+    prefix = f"{ment} " if ment else ""
+    content = f"{prefix}⛏️ 开始挖新活动:**{event['campaign']}** _({event['game']})_"
+
+    ordered = sorted(
+        event["drops"],
+        key=lambda d: (d["required_minutes"] is None, d["required_minutes"] or 0),
     )
-    return _fit_budget(
-        f"<@{discord_id}> ⛏️ 开始挖新活动:{parts}", len(campaign_events)
+    lines = []
+    for d in ordered:
+        if d["required_minutes"] is None:
+            lines.append(f"• **{d['name']}**")
+        else:
+            lines.append(f"• **{d['name']}** — {d['required_minutes']:g} 分钟")
+    desc = f"🎮 {event['game']} · {event['drop_count']} 个掉宝\n\n" + "\n".join(lines)
+    desc = _fit_budget(desc, event["drop_count"])
+
+    link = _DROPS_CAMPAIGNS_URL + "?dropID=" + quote(str(event["id"]), safe="")
+    main = discord.Embed(
+        title=event["campaign"], url=link, color=0x9146FF, description=desc
     )
+    images: list[str] = []
+    for d in ordered:
+        u = d["image_url"]
+        if u and u not in images:
+            images.append(u)
+    images = images[:4]
+    hd_box = _hd_box_art_url(event.get("box_art_url"))
+    embeds = [main]
+    if images:
+        if hd_box:
+            main.set_thumbnail(url=hd_box)
+        main.set_image(url=images[0])
+        for u in images[1:]:
+            extra = discord.Embed(url=link)
+            extra.set_image(url=u)
+            embeds.append(extra)
+    elif hd_box:
+        main.set_image(url=hd_box)
+    return content, embeds
 
 
 class MinerCog(commands.Cog):
@@ -508,10 +567,7 @@ class MinerCog(commands.Cog):
         if claim_groups:
             content, image_url = build_claim_message(link.discord_id, claim_groups)
             await self._push_notification(link, content, image_url)
-        if campaign_events:
-            await self._push_notification(
-                link, build_campaign_message(link.discord_id, campaign_events), None
-            )
+        # campaign_events fan-out is rebuilt guild-wide in Task 3.
 
     async def _push_notification(
         self, link: LinkState, content: str, image_url: str | None
