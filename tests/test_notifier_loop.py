@@ -110,7 +110,7 @@ async def test_baseline_then_claim_pushes_once(cog, mock_channel, patch_twitch_m
     assert "🎉 已领取掉宝" in kwargs["content"]
     assert "**Drop0**" in kwargs["content"]
     assert "✅ 全部领完" in kwargs["content"]        # only drop now claimed
-    assert kwargs["embed"].image.url == "https://cdn.example/r.png"
+    assert kwargs["embeds"][0].image.url == "https://cdn.example/r.png"
 
     await _tick(cog, _payload((True,)))
     assert mock_channel.send.await_count == 1       # no repeat
@@ -147,7 +147,7 @@ async def test_no_events_no_send(cog, mock_channel, patch_twitch_miners):
 
 @pytest.mark.asyncio
 async def test_new_campaign_pushes(cog, mock_channel, patch_twitch_miners):
-    """A campaign appearing with progress after baseline → one ⛏️ push."""
+    """A campaign appearing with progress after baseline → one announce."""
     await _seed_link(cog.bot.db)
     base = _payload((False,))
     await _tick(cog, base)
@@ -155,8 +155,13 @@ async def test_new_campaign_pushes(cog, mock_channel, patch_twitch_miners):
         (False,), campaign_id="c2", name="Day 4")["campaigns"]}
     await _tick(cog, two)
     assert mock_channel.send.await_count == 1
-    content = mock_channel.send.call_args.kwargs["content"]
-    assert "⛏️ 开始挖新活动" in content and "**Day 4**" in content
+    kwargs = mock_channel.send.call_args.kwargs
+    assert "⛏️ 开始挖新活动" in kwargs["content"] and "**Day 4**" in kwargs["content"]
+    assert "<@u1>" in kwargs["content"]
+    embeds = kwargs["embeds"]
+    assert embeds[0].title == "Day 4"
+    assert embeds[0].image.url == "https://cdn.example/r.png"
+    assert ("g1", "c2") in cog._announced
     await _tick(cog, two)                            # append-only: no repeat
     assert mock_channel.send.await_count == 1
 
@@ -323,3 +328,165 @@ async def test_same_tick_claim_and_new_campaign_two_messages(cog, mock_channel,
     contents = [c.kwargs["content"] for c in mock_channel.send.await_args_list]
     assert any("🎉" in c for c in contents)
     assert any("⛏️" in c and "**Day 4**" in c for c in contents)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Global campaign-launch announce (2026-08-15 spec §3.2)
+# ─────────────────────────────────────────────────────────────────────
+
+def _two_links(monkeypatch):
+    import cogs.miner
+    monkeypatch.setattr(cogs.miner, "TWITCH_MINERS",
+                        {"twitch_a": ("localhost", 8080),
+                         "twitch_b": ("localhost", 8081)})
+
+
+URL_A = "http://localhost:8080/api/campaigns"
+URL_B = "http://localhost:8081/api/campaigns"
+
+
+async def _tick2(cog, payload_a, payload_b):
+    with aioresponses() as m:
+        m.get(URL_A, payload=payload_a)
+        m.get(URL_B, payload=payload_b)
+        await cog.notifier_loop.coro(cog)
+
+
+@pytest.mark.asyncio
+async def test_second_link_dedupes_cross_tick(cog, mock_channel,
+                                              patch_twitch_miners, monkeypatch):
+    """spec test 7 (cross-tick): first detector announces, late one is deduped."""
+    _two_links(monkeypatch)
+    await _seed_link(cog.bot.db, discord_id="uA", twitch_user="twitch_a")
+    await _seed_link(cog.bot.db, discord_id="uB", twitch_user="twitch_b")
+    base = _payload((False,))
+    await _tick2(cog, base, base)                     # both baseline on c1
+    new = {"campaigns": base["campaigns"] + _payload(
+        (False,), campaign_id="c2", name="Day 4")["campaigns"]}
+    await _tick2(cog, new, base)                      # only A sees c2
+    assert mock_channel.send.await_count == 1
+    await _tick2(cog, new, new)                       # B sees it later → deduped
+    assert mock_channel.send.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_second_link_dedupes_same_tick(cog, mock_channel,
+                                             patch_twitch_miners, monkeypatch):
+    """spec test 7 (same tick): serial processing, second hit is deduped."""
+    _two_links(monkeypatch)
+    await _seed_link(cog.bot.db, discord_id="uA", twitch_user="twitch_a")
+    await _seed_link(cog.bot.db, discord_id="uB", twitch_user="twitch_b")
+    base = _payload((False,))
+    await _tick2(cog, base, base)
+    new = {"campaigns": base["campaigns"] + _payload(
+        (False,), campaign_id="c2", name="Day 4")["campaigns"]}
+    await _tick2(cog, new, new)                       # both see c2 same tick
+    assert mock_channel.send.await_count == 1
+    assert "<@uA>" in mock_channel.send.call_args.kwargs["content"]
+    assert "<@uB>" in mock_channel.send.call_args.kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_dormant_detector_leaves_announce_to_live_link(
+        cog, mock_channel, patch_twitch_miners, monkeypatch):
+    """spec test 8: dormant link neither sends nor marks; live link announces."""
+    _two_links(monkeypatch)
+    await _seed_link(cog.bot.db, discord_id="uA", twitch_user="twitch_a",
+                     channel_id=None)                 # dormant
+    await _seed_link(cog.bot.db, discord_id="uB", twitch_user="twitch_b")
+    base = _payload((False,))
+    await _tick2(cog, base, base)
+    new = {"campaigns": base["campaigns"] + _payload(
+        (False,), campaign_id="c2", name="Day 4")["campaigns"]}
+    await _tick2(cog, new, base)                      # only dormant A sees c2
+    mock_channel.send.assert_not_awaited()
+    assert ("g1", "c2") not in cog._announced         # not marked
+    await _tick2(cog, new, new)                       # live B sees it later
+    assert mock_channel.send.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_send_failure_not_marked_no_self_retry_other_link_retries(
+        cog, mock_channel, patch_twitch_miners, monkeypatch):
+    """spec test 9: fail → unmarked; failed link never self-retries (mining
+    append-only must NOT be unwound); another link retries successfully."""
+    _two_links(monkeypatch)
+    await _seed_link(cog.bot.db, discord_id="uA", twitch_user="twitch_a")
+    await _seed_link(cog.bot.db, discord_id="uB", twitch_user="twitch_b")
+    base = _payload((False,))
+    await _tick2(cog, base, base)
+    new = {"campaigns": base["campaigns"] + _payload(
+        (False,), campaign_id="c2", name="Day 4")["campaigns"]}
+    mock_channel.send = AsyncMock(side_effect=discord.Forbidden(MagicMock(), "x"))
+    await _tick2(cog, new, base)                      # A announce fails
+    assert ("g1", "c2") not in cog._announced
+    failed_count = mock_channel.send.await_count
+    await _tick2(cog, new, base)                      # A again ×2 → no self-retry
+    await _tick2(cog, new, base)
+    assert mock_channel.send.await_count == failed_count
+    mock_channel.send = AsyncMock(return_value=None)
+    await _tick2(cog, new, new)                       # B detects → retry OK
+    assert mock_channel.send.await_count == 1
+    assert ("g1", "c2") in cog._announced
+
+
+@pytest.mark.asyncio
+async def test_different_guilds_announce_separately(cog, mock_channel,
+                                                    patch_twitch_miners, monkeypatch):
+    """spec test 10: dedupe key is per guild."""
+    _two_links(monkeypatch)
+    await _seed_link(cog.bot.db, discord_id="uA", guild_id="g1",
+                     twitch_user="twitch_a")
+    await _seed_link(cog.bot.db, discord_id="uB", guild_id="g2",
+                     twitch_user="twitch_b")
+    base = _payload((False,))
+    await _tick2(cog, base, base)
+    new = {"campaigns": base["campaigns"] + _payload(
+        (False,), campaign_id="c2", name="Day 4")["campaigns"]}
+    await _tick2(cog, new, new)
+    assert mock_channel.send.await_count == 2
+    assert ("g1", "c2") in cog._announced and ("g2", "c2") in cog._announced
+
+
+@pytest.mark.asyncio
+async def test_multi_new_campaigns_one_message_each(cog, mock_channel,
+                                                    patch_twitch_miners):
+    """spec test 11: same tick, two new campaigns → two separate messages."""
+    await _seed_link(cog.bot.db)
+    base = _payload((False,))
+    await _tick(cog, base)
+    three = {"campaigns": base["campaigns"]
+             + _payload((False,), campaign_id="c2", name="Day 4")["campaigns"]
+             + _payload((False,), campaign_id="c3", name="Day 5")["campaigns"]}
+    await _tick(cog, three)
+    assert mock_channel.send.await_count == 2
+    contents = [c.kwargs["content"] for c in mock_channel.send.await_args_list]
+    assert any("**Day 4**" in c for c in contents)
+    assert any("**Day 5**" in c for c in contents)
+
+
+def test_mentions_by_guild_dedup_and_order():
+    """spec test 12: first-seen order, same discord user twice → once,
+    dormant links included."""
+    from cogs.miner import _mentions_by_guild
+    from database import LinkState
+
+    def _l(d, g, t, ch="101"):
+        return LinkState(discord_id=d, guild_id=g, twitch_user=t,
+                         last_interaction_channel_id=ch, last_top_drop_id=None)
+
+    links = [_l("u1", "g1", "ta"), _l("u2", "g1", "tb", ch=None),
+             _l("u1", "g1", "tc"), _l("u3", "g2", "td")]
+    assert _mentions_by_guild(links) == {"g1": ["u1", "u2"], "g2": ["u3"]}
+
+
+@pytest.mark.asyncio
+async def test_announced_fifo_cap_evicts_oldest(cog):
+    """spec test 13: FIFO eviction at ANNOUNCED_CAP."""
+    from cogs.miner import ANNOUNCED_CAP
+    for i in range(ANNOUNCED_CAP):
+        cog._announced[("g1", f"c{i}")] = None
+    cog._mark_announced(("g1", "cNEW"))
+    assert len(cog._announced) == ANNOUNCED_CAP
+    assert ("g1", "c0") not in cog._announced
+    assert ("g1", "cNEW") in cog._announced

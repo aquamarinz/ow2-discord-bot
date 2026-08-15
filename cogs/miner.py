@@ -88,6 +88,7 @@ MINING_STATE_CAP = 500
 MENTION_CAP = 10
 EMBED_TITLE_CAP = 256   # Discord hard limit; over → 50035, whole message fails
 GAME_NAME_CAP = 100
+ANNOUNCED_CAP = 500
 _DROPS_CAMPAIGNS_URL = "https://www.twitch.tv/drops/campaigns"
 
 
@@ -295,6 +296,22 @@ def build_campaign_announce(
     return content, embeds
 
 
+def _mentions_by_guild(links: list[LinkState]) -> dict[str, list[str]]:
+    """guild_id → deduped discord_ids in first-seen order.
+
+    Includes dormant / minerless / currently-unreachable links on purpose:
+    "bound users" is the literal full set, stable across ticks (spec §3.2).
+    Same-user dedup is defensive: the (discord_id, guild_id) PK makes it
+    unreachable in prod, but the spec mandates it and tests construct it.
+    """
+    out: dict[str, list[str]] = {}
+    for l in links:
+        ids = out.setdefault(l.guild_id, [])
+        if l.discord_id not in ids:
+            ids.append(l.discord_id)
+    return out
+
+
 class MinerCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -302,6 +319,10 @@ class MinerCog(commands.Cog):
         # (discord_id, guild_id, twitch_user) -> {"drops": dict, "mining": set}
         # In-memory only: restart re-baselines silently (spec §3.1).
         self._notify_state: dict[tuple[str, str, str], dict] = {}
+        # (guild_id, campaign_id) -> announced; FIFO-capped, in-memory only.
+        # Marked ONLY after a successful send (spec §3.2): failures stay
+        # unmarked so another link's later detection retries naturally.
+        self._announced: dict[tuple[str, str], None] = {}
 
     async def cog_load(self) -> None:
         self._session = aiohttp.ClientSession(
@@ -515,9 +536,10 @@ class MinerCog(commands.Cog):
         }
         for stale in set(self._notify_state) - live_keys:
             del self._notify_state[stale]
+        mentions = _mentions_by_guild(links)
         for link in links:
             try:
-                await self._process_link(link)
+                await self._process_link(link, mentions[link.guild_id])
             except asyncio.CancelledError:
                 # cog_unload cancellation — let it propagate so the loop stops cleanly
                 raise
@@ -545,7 +567,12 @@ class MinerCog(commands.Cog):
             "notifier_loop FAILED (will stop until docker compose restart): %s", exc
         )
 
-    async def _process_link(self, link: LinkState) -> None:
+    def _mark_announced(self, key: tuple[str, str]) -> None:
+        self._announced[key] = None
+        while len(self._announced) > ANNOUNCED_CAP:
+            del self._announced[next(iter(self._announced))]
+
+    async def _process_link(self, link: LinkState, mention_ids: list[str]) -> None:
         # Guard against the session being closed mid-tick by cog_unload.
         if self._session is None or self._session.closed:
             return
@@ -573,15 +600,28 @@ class MinerCog(commands.Cog):
         self._notify_state[key] = new_state
 
         if not link.last_interaction_channel_id:
-            return  # dormant row: keep the baseline fresh, never send
+            return  # dormant row: keep the baseline fresh, never send/mark
         if claim_groups:
             content, image_url = build_claim_message(link.discord_id, claim_groups)
-            await self._push_notification(link, content, image_url)
-        # campaign_events fan-out is rebuilt guild-wide in Task 3.
+            embeds = None
+            if image_url:
+                e = discord.Embed(color=0x9146FF)
+                e.set_image(url=image_url)
+                embeds = [e]
+            await self._push_notification(link, content, embeds)
+        for ev in campaign_events:
+            key = (link.guild_id, ev["id"])
+            if key in self._announced:
+                continue
+            content, embeds = build_campaign_announce(mention_ids, ev)
+            if await self._push_notification(link, content, embeds):
+                self._mark_announced(key)
+            # failure: stay unmarked; this link's own append-only `mining`
+            # prevents per-tick self-retry, another link retries later.
 
     async def _push_notification(
-        self, link: LinkState, content: str, image_url: str | None
-    ) -> None:
+        self, link: LinkState, content: str, embeds: list[discord.Embed] | None
+    ) -> bool:
         try:
             channel_id_int = int(link.last_interaction_channel_id)
         except (TypeError, ValueError):
@@ -589,20 +629,20 @@ class MinerCog(commands.Cog):
                 "notifier: invalid channel_id=%r for user=%s; skip",
                 link.last_interaction_channel_id, link.discord_id,
             )
-            return
+            return False
         channel = self.bot.get_channel(channel_id_int)
         if channel is None:
             logger.warning(
                 "notifier: channel %s not found (deleted/bot kicked/thread archived) for user=%s guild=%s",
                 link.last_interaction_channel_id, link.discord_id, link.guild_id,
             )
-            return
-        embed = None
-        if image_url:
-            embed = discord.Embed(color=0x9146FF)
-            embed.set_image(url=image_url)
+            return False
         try:
-            await channel.send(content=content, embed=embed)
+            if embeds:
+                await channel.send(content=content, embeds=embeds)
+            else:
+                await channel.send(content=content)
+            return True
         except discord.Forbidden:
             logger.warning(
                 "notifier: forbidden in channel=%s; skipping",
@@ -618,6 +658,7 @@ class MinerCog(commands.Cog):
                 "notifier: discord HTTP error in channel=%s: %s",
                 link.last_interaction_channel_id, e,
             )
+        return False
 
 
 async def setup(bot: commands.Bot) -> None:
