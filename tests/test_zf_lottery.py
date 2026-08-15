@@ -1,7 +1,16 @@
 """Unit tests for /zfwins pure helpers (spec §4.2-§4.3, §7)."""
 from __future__ import annotations
 
-from cogs.zf_lottery import match_flow, norm_ws, parse_win_text, sig_time_str
+from cogs.zf_lottery import (
+    WinEntry,
+    build_wins,
+    match_flow,
+    norm_ws,
+    parse_win_text,
+    read_account,
+    sig_time_str,
+    sort_key,
+)
 
 SAMPLE_TRUNC = (
     "抽签助手 ： 恭喜您，在 【GB】御极 YUJI｜Magic& 结 ... 抽签活动中中签 "
@@ -110,3 +119,87 @@ def test_match_short_truncated_prefix_blocked_but_short_equality_ok():
 def test_match_poison_entries_skipped():
     part = {"eee": "not-a-dict", "fff": {"title": 123}, "ggg": {"title": "【IC】繁花轴", "ts": 1}}
     assert match_flow("【IC】繁花轴", part) == "ggg"
+
+
+def test_match_unicode_ellipsis_variant():
+    # Task 2 review carryover:锁住 _TRUNC_RX 的 U+2026 分支(仅 `...` 有覆盖)
+    assert match_flow("【IC】繁花轴…", PART) == "nnpanoWaVplv"
+
+
+WIN_SEEN = {
+    "thread:3265065:2025/10/16 2:35:39b144aff0da": {
+        "sender": "抽签助手", "text": SAMPLE_COLON, "ts": 1780355152},
+    "thread:3265065:2026/8/8 12:05:6b9b0e29a14b": {
+        "sender": "抽签助手", "text": SAMPLE_TRUNC, "ts": 1786227148},
+}
+
+
+def test_build_wins_parses_and_sorts_by_mail_time_desc():
+    wins = build_wins(WIN_SEEN, PART)
+    assert [w.prize for w in wins] == ["随机结晶体验装4颗", "大漆擦漆手托随机"]
+    assert wins[0].flow_hash == "yL3BNnWW1nd9"
+    assert wins[1].flow_hash is None          # 早于账本窗口,预期无链接
+    assert wins[0].time_str == "2026/8/8 12:05"
+
+
+def test_sort_key_is_scalar_and_mixable():
+    # R2-M1:time_str 可解析用其时间戳,失败回退 ts —— 两分支都是 float 可混排
+    ok = WinEntry(True, "p", "a", "r", "2026/8/8 12:05", 100.0, None)
+    bad = WinEntry(True, "p", "a", "r", "", 1786227148.0, None)
+    assert isinstance(sort_key(ok), float) and isinstance(sort_key(bad), float)
+    assert sort_key(ok) != sort_key(bad)
+
+
+def test_build_wins_unparsed_entry_kept_as_neutral():
+    wins = build_wins({"thread:1:2026/1/1 9:00:ab": {
+        "sender": "抽签助手", "text": "您的帖子已通过审核", "ts": 5}}, {})
+    assert len(wins) == 1 and wins[0].parsed is False
+    assert wins[0].raw_text == "您的帖子已通过审核"
+
+
+def test_build_wins_whitespace_degenerate_group_is_unparsed():
+    # Task 2 review carryover:正则可产出全空白 group(活动名退化),须当解析失败
+    wins = build_wins({"thread:1:2026/1/1 9:00:ab": {
+        "text": "恭喜您，在  抽签活动中中签 X ！", "ts": 5}}, {})
+    assert len(wins) == 1 and wins[0].parsed is False
+    assert wins[0].activity == "" and wins[0].prize == ""
+
+
+def test_build_wins_poison_entries_skipped():
+    # R2-M2:条目非 dict / text 非 str / ts 非数值 → 跳过或钳默认,不炸不整体失败
+    wins = build_wins({
+        "k1": "not-a-dict",
+        "k2": {"text": 123, "ts": 1},
+        "thread:1:2026/1/1 9:00:ab": {"text": SAMPLE_TRUNC, "ts": "NaNstr"},
+    }, {})
+    assert len(wins) == 1 and wins[0].ts == 0.0
+
+
+def test_read_account_missing_or_corrupt_is_unreadable(tmp_path):
+    assert read_account(tmp_path, "zeus") is None          # 目录都没有 → 不可读
+    d = tmp_path / "lyn"; d.mkdir()
+    (d / "win_seen.json").write_text("{broken")
+    assert read_account(tmp_path, "lyn") is None           # 损坏 → 不可读
+
+
+def test_read_account_toplevel_not_dict_is_unreadable(tmp_path):
+    d = tmp_path / "zeus"; d.mkdir()
+    (d / "win_seen.json").write_text("[1,2]")
+    assert read_account(tmp_path, "zeus") is None
+
+
+def test_read_account_participated_corrupt_degrades_links_only(tmp_path):
+    import json as _json
+    d = tmp_path / "zeus"; d.mkdir()
+    # 显式 utf-8:读侧刻意不依赖容器 locale(P-M2),写侧同样不该依赖
+    (d / "win_seen.json").write_text(_json.dumps(WIN_SEEN, ensure_ascii=False), encoding="utf-8")
+    (d / "participated.json").write_text("{broken")
+    wins = read_account(tmp_path, "zeus")
+    assert wins is not None and len(wins) == 2
+    assert all(w.flow_hash is None for w in wins)
+
+
+def test_read_account_empty_ledger_is_no_wins(tmp_path):
+    d = tmp_path / "zeus"; d.mkdir()
+    (d / "win_seen.json").write_text("{}")
+    assert read_account(tmp_path, "zeus") == []
