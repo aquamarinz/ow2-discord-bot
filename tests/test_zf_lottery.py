@@ -334,3 +334,26 @@ def test_field_value_boundary_hugs_1024_with_note():
     assert len(v) > 1000                              # 防用例自身失真成空断言
     assert len(v) <= 1024                             # Discord field 硬上限
     assert v.endswith("（仅显示最近 5 条）")
+
+
+from cogs.zf_lottery import build_embed
+
+
+def test_build_embed_field_order_and_unreadable(tmp_path):
+    d = tmp_path / "zeus"; d.mkdir()
+    (d / "win_seen.json").write_text(
+        _json.dumps(WIN_SEEN, ensure_ascii=False), encoding="utf-8")
+    # lyn 目录不存在 → 该账号不可读,zeus 正常 —— 账号隔离
+    emb = build_embed(tmp_path)
+    assert [f.name for f in emb.fields] == ["Zeus", "Lyn"]
+    assert "🎉" in emb.fields[0].value
+    assert emb.fields[1].value == "⚠️ 数据不可读"
+    assert emb.footer.text == "数据来自每日自动扫描账本"
+
+
+def test_build_embed_empty_ledger(tmp_path):
+    for slug in ("zeus", "lyn"):
+        d = tmp_path / slug; d.mkdir()
+        (d / "win_seen.json").write_text("{}", encoding="utf-8")
+    emb = build_embed(tmp_path)
+    assert [f.value for f in emb.fields] == ["暂无中奖记录", "暂无中奖记录"]

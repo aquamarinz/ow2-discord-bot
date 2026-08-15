@@ -9,12 +9,17 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import discord
+from discord import app_commands
+from discord.ext import commands
+
+from config import ZF_DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -200,3 +205,39 @@ def field_value(entries: list[WinEntry]) -> str:
     if len(out) < len(entries):
         out.append(f"（仅显示最近 {len(out)} 条）")
     return "\n".join(out)
+
+
+ACCOUNTS = [("zeus", "Zeus"), ("lyn", "Lyn")]  # 与 zf-lottery slug allowlist 同步硬编码
+
+
+def build_embed(base: Path) -> discord.Embed:
+    # P-M5:抽成纯函数,embed 组装可直测(仿 tests/test_build_embed.py 模式)
+    embed = discord.Embed(title="🎰 zFrontier 抽奖中奖记录", color=0xF5A623)
+    for slug, display in ACCOUNTS:
+        entries = read_account(base, slug)
+        value = "⚠️ 数据不可读" if entries is None else field_value(entries)
+        embed.add_field(name=display, value=value, inline=False)
+    embed.set_footer(text="数据来自每日自动扫描账本")
+    return embed
+
+
+class ZfLotteryCog(commands.Cog):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+
+    @app_commands.command(
+        name="zfwins",
+        description="查询 zFrontier 抽奖中奖记录（Zeus + Lyn）",
+    )
+    @app_commands.guild_only()
+    async def zfwins(self, interaction: discord.Interaction) -> None:
+        # 零网络 IO、文件在本地盘且只有几 KB → 不 defer(R2-L2),
+        # 也避免「公开 defer + ephemeral 错误」的占位耦合(spec §4.4)。
+        if not ZF_DATA_DIR or not os.path.isdir(ZF_DATA_DIR):
+            await interaction.response.send_message("zf 数据目录未配置", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=build_embed(Path(ZF_DATA_DIR)))
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(ZfLotteryCog(bot))
