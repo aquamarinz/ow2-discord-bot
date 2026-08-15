@@ -153,3 +153,21 @@ def test_announce_campaign_id_quoted_in_url():
     assert embeds[0].url == (
         "https://www.twitch.tv/drops/campaigns?dropID="
         "ab%20c%26%E4%B8%AD%2F%E6%96%87")
+
+
+def test_announce_clamps_overlong_campaign_and_game_fields():
+    """Discord hard-rejects embed title >256 and content >2000 with 50035,
+    failing the WHOLE message. Since mining state is append-only and every
+    link fails identically, an unclamped overlong name would lose the
+    announcement permanently. Clamp per field — never slice content whole.
+    """
+    ids = [str(10 ** 19 + i) for i in range(12)]      # 12 x 20-digit snowflake
+    content, embeds = build_campaign_announce(
+        ids, _ev(campaign="C" * 500, game="G" * 300, drops=[_evd()]))
+    assert embeds[0].title == "C" * 256
+    assert len(embeds[0].title) == 256
+    assert embeds[0].description.startswith("🎮 " + "G" * 100 + " · 1 个掉宝\n\n")
+    # Worst case (mention cap + max-length names) is structurally bounded.
+    assert len(content) < 2000
+    # Campaign name still sits complete at the tail, at its clamped length.
+    assert content.endswith("**" + "C" * 256 + "** _(" + "G" * 100 + ")_")

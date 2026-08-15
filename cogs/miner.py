@@ -86,6 +86,8 @@ NOTIFY_CONTENT_BUDGET = 1800
 DROPS_STATE_CAP = 2000
 MINING_STATE_CAP = 500
 MENTION_CAP = 10
+EMBED_TITLE_CAP = 256   # Discord hard limit; over → 50035, whole message fails
+GAME_NAME_CAP = 100
 _DROPS_CAMPAIGNS_URL = "https://www.twitch.tv/drops/campaigns"
 
 
@@ -240,12 +242,20 @@ def build_campaign_announce(
     as ONE embed with a 2x2 image grid. mention_ids must be pre-deduped by
     the caller; it is capped here (MENTION_CAP) so the campaign name at the
     tail can never be truncated away — no prefix slicing of content.
+
+    Payload strings are clamped per field (not by slicing the assembled
+    content) because Discord rejects the WHOLE message with 50035 on a >256
+    embed title or >2000 content. With mentions capped and both names
+    clamped, content length is structurally bounded well under 2000.
     """
+    campaign = str(event["campaign"])[:EMBED_TITLE_CAP]
+    game = str(event["game"])[:GAME_NAME_CAP]
+
     ment = " ".join(f"<@{m}>" for m in mention_ids[:MENTION_CAP])
     if len(mention_ids) > MENTION_CAP:
         ment += f" 等 {len(mention_ids)} 人"
     prefix = f"{ment} " if ment else ""
-    content = f"{prefix}⛏️ 开始挖新活动:**{event['campaign']}** _({event['game']})_"
+    content = f"{prefix}⛏️ 开始挖新活动:**{campaign}** _({game})_"
 
     ordered = sorted(
         event["drops"],
@@ -257,12 +267,12 @@ def build_campaign_announce(
             lines.append(f"• **{d['name']}**")
         else:
             lines.append(f"• **{d['name']}** — {d['required_minutes']:g} 分钟")
-    desc = f"🎮 {event['game']} · {event['drop_count']} 个掉宝\n\n" + "\n".join(lines)
+    desc = f"🎮 {game} · {event['drop_count']} 个掉宝\n\n" + "\n".join(lines)
     desc = _fit_budget(desc, event["drop_count"])
 
     link = _DROPS_CAMPAIGNS_URL + "?dropID=" + quote(str(event["id"]), safe="")
     main = discord.Embed(
-        title=event["campaign"], url=link, color=0x9146FF, description=desc
+        title=campaign, url=link, color=0x9146FF, description=desc
     )
     images: list[str] = []
     for d in ordered:
