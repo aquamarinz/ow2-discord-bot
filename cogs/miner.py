@@ -658,6 +658,17 @@ class MinerCog(commands.Cog):
                 "notifier: discord HTTP error in channel=%s: %s",
                 link.last_interaction_channel_id, e,
             )
+        except Exception:
+            # Catch-all so ONE failed send can never truncate the rest of this
+            # tick's events (spec §3.2). Non-discord exceptions do reach here:
+            # aiohttp.ClientOSError / asyncio.TimeoutError / discord.RateLimited
+            # are not discord.HTTPException subclasses. Escaping would hit
+            # notifier_loop's per-link catch and silently drop every remaining
+            # event — permanently, since `mining` is append-only.
+            logger.exception(
+                "notifier: unexpected send failure in channel=%s",
+                link.last_interaction_channel_id,
+            )
         return False
 
 

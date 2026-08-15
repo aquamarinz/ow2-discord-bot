@@ -465,6 +465,28 @@ async def test_multi_new_campaigns_one_message_each(cog, mock_channel,
     assert any("**Day 5**" in c for c in contents)
 
 
+@pytest.mark.asyncio
+async def test_non_discord_send_error_does_not_truncate_tick(cog, mock_channel,
+                                                             patch_twitch_miners):
+    """A non-discord send exception (transient network) must not swallow the
+    REST of this tick's events: c2 fails, c3 still goes out. Both are already
+    in append-only `mining`, so a truncated tick loses c3 forever."""
+    await _seed_link(cog.bot.db)
+    base = _payload((False,))
+    await _tick(cog, base)
+    three = {"campaigns": base["campaigns"]
+             + _payload((False,), campaign_id="c2", name="Day 4")["campaigns"]
+             + _payload((False,), campaign_id="c3", name="Day 5")["campaigns"]}
+    mock_channel.send = AsyncMock(side_effect=[aiohttp.ClientOSError(), None])
+    await _tick(cog, three)
+    assert mock_channel.send.await_count == 2         # c2 failed, c3 still sent
+    contents = [c.kwargs["content"] for c in mock_channel.send.await_args_list]
+    assert "**Day 4**" in contents[0]                 # payload order: c2 first
+    assert "**Day 5**" in contents[1]
+    assert ("g1", "c2") not in cog._announced         # failure → unmarked
+    assert ("g1", "c3") in cog._announced             # success → marked
+
+
 def test_mentions_by_guild_dedup_and_order():
     """spec test 12: first-seen order, same discord user twice → once,
     dormant links included."""
