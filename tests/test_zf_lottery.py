@@ -1,6 +1,8 @@
 """Unit tests for /zfwins pure helpers (spec §4.2-§4.3, §7)."""
 from __future__ import annotations
 
+import json as _json
+
 from cogs.zf_lottery import (
     WinEntry,
     build_wins,
@@ -189,7 +191,6 @@ def test_read_account_toplevel_not_dict_is_unreadable(tmp_path):
 
 
 def test_read_account_participated_corrupt_degrades_links_only(tmp_path):
-    import json as _json
     d = tmp_path / "zeus"; d.mkdir()
     # 显式 utf-8:读侧刻意不依赖容器 locale(P-M2),写侧同样不该依赖
     (d / "win_seen.json").write_text(_json.dumps(WIN_SEEN, ensure_ascii=False), encoding="utf-8")
@@ -203,3 +204,64 @@ def test_read_account_empty_ledger_is_no_wins(tmp_path):
     d = tmp_path / "zeus"; d.mkdir()
     (d / "win_seen.json").write_text("{}")
     assert read_account(tmp_path, "zeus") == []
+
+
+def test_read_account_invalid_utf8_is_unreadable(tmp_path):
+    """I1:锁 P-M2 的 UnicodeDecodeError 兜底。
+
+    UnicodeDecodeError 是 ValueError 子类但**不是** JSONDecodeError 子类 ——
+    只捕 JSONDecodeError 会让坏字节逃逸成整条 ❌ 指令,破坏账号隔离。
+    """
+    d = tmp_path / "zeus"; d.mkdir()
+    (d / "win_seen.json").write_bytes(b'{"a": {"text": "\xff", "ts": 1}}')
+    assert read_account(tmp_path, "zeus") is None
+
+
+def test_read_account_participated_not_dict_degrades_links_only(tmp_path):
+    # I2:participated 顶层是 list 时若不钳位,match_flow 会 AttributeError 炸穿
+    d = tmp_path / "zeus"; d.mkdir()
+    (d / "win_seen.json").write_text(_json.dumps(WIN_SEEN, ensure_ascii=False), encoding="utf-8")
+    (d / "participated.json").write_text("[1,2,3]")
+    wins = read_account(tmp_path, "zeus")
+    assert wins is not None and len(wins) == 2
+    assert all(w.flow_hash is None for w in wins)
+
+
+# I3:time_str 序与 ts 序**发散**的账本 —— 同次首扫把新旧两封私信一起入账,
+# 落盘 ts 反映扫描顺序而非站点时间,故排序必须认 time_str 不认 ts。
+DIVERGENT_SEEN = {
+    "thread:1:2026/8/8 12:05:aaaaaaaaaaaa": {"text": SAMPLE_TRUNC, "ts": 100.0},
+    "thread:2:2025/10/16 2:35:bbbbbbbbbbbb": {"text": SAMPLE_COLON, "ts": 999.0},
+}
+
+
+def test_build_wins_sorts_by_mail_time_not_ledger_ts():
+    wins = build_wins(DIVERGENT_SEEN, PART)
+    assert [w.prize for w in wins] == ["随机结晶体验装4颗", "大漆擦漆手托随机"]
+    assert wins[0].ts == 100.0 and wins[1].ts == 999.0   # ts 序恰好相反
+
+
+_NAN_LEDGER = (
+    '{"thread:1:2026/1/1 9:00:ab": {"text": '
+    '"恭喜您，在 【IC】繁花轴 抽签活动中中签 繁花轴打样版5颗 ！", "ts": NaN}}'
+)
+
+
+def test_build_wins_real_nan_ts_clamped():
+    # M2:json.loads 默认接受裸 NaN 字面量 → isfinite 门必须真的挡住
+    wins = build_wins(_json.loads(_NAN_LEDGER), PART)
+    assert len(wins) == 1 and wins[0].ts == 0.0
+    assert wins[0].parsed is True and wins[0].flow_hash == "nnpanoWaVplv"
+
+
+def test_build_wins_bool_ts_clamped():
+    # M2:bool 是 int 子类,不排除的话 True 会变成 1.0 冒充时间戳
+    wins = build_wins({"thread:1:2026/1/1 9:00:ab": {"text": SAMPLE_TRUNC, "ts": True}}, {})
+    assert len(wins) == 1 and wins[0].ts == 0.0
+
+
+def test_build_wins_oversized_int_ts_clamped():
+    # M1:401 位 JSON 整数让 float() **和** math.isfinite() 双双抛 OverflowError
+    raw = _json.loads('{"thread:1:2026/1/1 9:00:ab": {"text": "x", "ts": %s}}' % ("9" * 401))
+    wins = build_wins(raw, {})
+    assert len(wins) == 1 and wins[0].ts == 0.0

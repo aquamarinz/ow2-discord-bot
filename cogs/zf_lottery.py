@@ -82,6 +82,23 @@ class WinEntry:
     flow_hash: str | None
 
 
+def _coerce_ts(raw: object) -> float:
+    """账本 ts → 有限 float,任何不可信取值一律钳 0.0。
+
+    P-L3:json.loads 默认接受裸 NaN 字面量(job-hub 非有限浮点前科)。
+    M1:401 位 JSON 整数会让 float() **和** math.isfinite() 双双抛 OverflowError,
+    故转换整体包进 try —— 一个读不懂的时间戳不该炸掉整个账号的查询。
+    bool 是 int 子类,必须显式排除(否则 True 冒充成 1.0)。
+    """
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        return 0.0
+    try:
+        val = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return val if math.isfinite(val) else 0.0
+
+
 def sort_key(e: WinEntry) -> float:
     # R2-M1:统一返回 float 时间戳,勿混 datetime/int
     try:
@@ -98,11 +115,7 @@ def build_wins(win_seen: dict, participated: dict) -> list[WinEntry]:
         text = rec.get("text")
         if not isinstance(text, str):
             continue
-        ts_raw = rec.get("ts")
-        # P-L3:json.loads 接受 NaN 字面量,isfinite 一并挡掉(job-hub 非有限浮点前科)
-        ts = (float(ts_raw)
-              if isinstance(ts_raw, (int, float)) and not isinstance(ts_raw, bool)
-              and math.isfinite(ts_raw) else 0.0)
+        ts = _coerce_ts(rec.get("ts"))
         time_str = sig_time_str(sig) if isinstance(sig, str) else ""
         parsed = parse_win_text(text)
         # Task 2 review carryover:正则可产出全空白 group(如活动名退化成 " "),
