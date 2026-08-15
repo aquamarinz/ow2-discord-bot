@@ -14,9 +14,6 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", _DEFAULT_DB_PATH)
 SUPABASE_STADIUM_URL = os.getenv("SUPABASE_STADIUM_URL", "")
 SUPABASE_STADIUM_KEY = os.getenv("SUPABASE_STADIUM_KEY", "")
 
-# --- zFrontier lottery ledger (read-only mount, for /zfwins) ---
-ZF_DATA_DIR = os.getenv("ZF_DATA_DIR", "")
-
 # --- API request throttle ---
 API_REQUEST_DELAY = 0.5   # seconds between fallback retries
 

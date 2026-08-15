@@ -25,7 +25,6 @@ _COGS = [
     "cogs.hero",
     "cogs.twitch_link",
     "cogs.miner",
-    "cogs.zf_lottery",
 ]
 
 
