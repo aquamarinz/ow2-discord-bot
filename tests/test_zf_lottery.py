@@ -316,3 +316,21 @@ def test_field_value_1024_whole_entry_truncation():
     assert "（仅显示最近" in v
     # 整条截断:最后一个可见块必须是完整三行块的结尾(链接行),不是半截文本
     assert v.split("\n（仅显示最近")[0].rstrip().endswith(")")
+
+
+def test_render_block_escapes_time_str():
+    """I1:time_str 也是站点 UGC —— 未 escape 时毒签名键会渲染成活链接。"""
+    poison = "**pwn** [a](http://e.co)"
+    b = render_block(_entry(time_str=poison))
+    assert f"（{poison}）" not in b                    # 原样(可渲染)形态必须不存在
+    assert "\\*\\*pwn\\*\\*" in b and "\\[a](http://e.co)" in b
+
+
+def test_field_value_boundary_hugs_1024_with_note():
+    """I2:压线锁 —— used 逼近预算上限且触发尾注,证明 _NOTE_RESERVE 真兜得住 1024。"""
+    entries = [_entry(prize="奖" * 81) for _ in range(6)]
+    assert len(render_block(entries[0])) == 201       # 夹具意图:块格式一变立刻炸
+    v = field_value(entries)
+    assert len(v) > 1000                              # 防用例自身失真成空断言
+    assert len(v) <= 1024                             # Discord field 硬上限
+    assert v.endswith("（仅显示最近 5 条）")

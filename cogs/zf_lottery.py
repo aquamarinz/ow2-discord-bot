@@ -160,13 +160,16 @@ def read_account(base: Path, slug: str) -> list[WinEntry] | None:
 
 MAX_ENTRIES = 10
 FIELD_LIMIT = 1024
-_NOTE_RESERVE = 24  # 尾注「（仅显示最近 N 条）」预算
+# I2:尾注预算自洽推导(最长尾注 = N 取满 MAX_ENTRIES 时 + 1 个块间换行),
+# 与文案脱钩的魔数会在改文案时静默破 1024。
+_NOTE_RESERVE = len(f"（仅显示最近 {MAX_ENTRIES} 条）") + 1
 _RAW_CAP = 120
 
 
 def render_block(e: WinEntry) -> str:
     md = discord.utils.escape_markdown
-    when = f"（{e.time_str}）" if e.time_str else ""
+    # I1:time_str 取自 win_seen 签名键(站点 SSR 文本),与 prize/activity 同信任级 → 必须 escape
+    when = f"（{md(e.time_str)}）" if e.time_str else ""
     if not e.parsed:
         body = ["ℹ️ 未识别私信", f"　{md(e.raw_text[:_RAW_CAP])}{when}"]
         links = f"　[去领奖]({MAIL_LIST_URL})"
