@@ -36,3 +36,26 @@ def sig_time_str(signature: str) -> str:
     if first == -1 or last <= first:
         return ""
     return rest[first + 1:last].strip()
+
+
+_TRUNC_RX = re.compile(r"\s*(\.\.\.|…)+$")  # P-L4:兼容连写省略号
+MIN_PREFIX = 6  # 截断分支防误配阈值;全等分支不受限(R2-L1)
+
+
+def match_flow(activity: str, participated: dict) -> str | None:
+    activity = norm_ws(activity)  # P-L2:入参与 title 同规格归一
+    stripped = _TRUNC_RX.sub("", activity)
+    truncated = stripped != activity
+    if truncated and len(stripped) < MIN_PREFIX:
+        return None
+    hits = []
+    for hash_id, entry in participated.items():
+        if not isinstance(entry, dict):
+            continue
+        title = entry.get("title")
+        if not isinstance(title, str):
+            continue
+        t = norm_ws(title)
+        if (t.startswith(stripped) if truncated else t == stripped):
+            hits.append(hash_id)
+    return hits[0] if len(hits) == 1 else None
