@@ -2,9 +2,9 @@
 
 Reads HTTP API of rangermix miner (no socket.io). The /miner command does a
 one-shot fetch and replies ephemerally. The notifier_loop runs every 60s in
-the background, polling /api/campaigns per twitch_links row, and pushes a
-channel message + @user mention only for newly claimed drops and newly
-started campaigns (no per-drop switch spam).
+the background, polling /api/campaigns per twitch_links row, and pushes:
+newly claimed drops (per user), and a single guild-wide rich announcement
+per newly started campaign (reward image gallery, deduped across links).
 """
 from __future__ import annotations
 import asyncio
