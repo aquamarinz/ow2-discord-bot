@@ -610,12 +610,12 @@ class MinerCog(commands.Cog):
                 embeds = [e]
             await self._push_notification(link, content, embeds)
         for ev in campaign_events:
-            key = (link.guild_id, ev["id"])
-            if key in self._announced:
+            ann_key = (link.guild_id, ev["id"])
+            if ann_key in self._announced:
                 continue
             content, embeds = build_campaign_announce(mention_ids, ev)
             if await self._push_notification(link, content, embeds):
-                self._mark_announced(key)
+                self._mark_announced(ann_key)
             # failure: stay unmarked; this link's own append-only `mining`
             # prevents per-tick self-retry, another link retries later.
 

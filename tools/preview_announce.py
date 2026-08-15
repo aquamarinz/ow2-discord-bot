@@ -7,9 +7,11 @@ Renders a REAL /api/campaigns snapshot through the production code path
 Usage (on the Pi — DISCORD_TOKEN lives in the container env):
   cd ~/services/discord-bot
   docker compose run --rm --entrypoint python discord-bot \
-      -m tools.preview_announce /app/snapshot.json <channel_id> [name-filter]
+      -m tools.preview_announce /app/data/snapshot.json <channel_id> [name-filter]
 
-snapshot.json: raw /api/campaigns JSON (e.g. curl from a miner).
+snapshot.json: raw /api/campaigns JSON (e.g. curl from a miner). Drop it into
+               ~/services/discord-bot/data/ — that dir is the only bind mount
+               (./data:/app/data); the rest of /app comes from the image.
 name-filter:   optional substring to pick a campaign by name.
 """
 from __future__ import annotations
