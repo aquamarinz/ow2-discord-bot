@@ -52,11 +52,17 @@ def sig_time_str(signature: str) -> str:
     last = rest.rfind(":")
     if first == -1 or last <= first:
         return ""
-    return rest[first + 1:last].strip()
+    # N2:必须 norm_ws 而非 strip —— 中段内嵌 \n 会在 field 里注入额外行,
+    # 可伪造出一条「🎉 假中奖」;escape_markdown 管不住 emoji/纯文本。
+    return norm_ws(rest[first + 1:last])
 
 
 _TRUNC_RX = re.compile(r"\s*(\.\.\.|…)+$")  # P-L4:兼容连写省略号
 MIN_PREFIX = 6  # 截断分支防误配阈值;全等分支不受限(R2-L1)
+# N1:hash 是唯一未 escape 就进链接 **target** 的站点值 —— escape_markdown 只护 label,
+# target 里一个 `)` 就能提前闭合我们拼的 markdown 再接上攻击者链接。
+# 故按站点真实形态(12 位 base62)收白名单,不合规的 key 与毒 entry 同待遇:跳过。
+_HASH_RX = re.compile(r"[A-Za-z0-9_-]{1,32}")
 
 
 def match_flow(activity: str, participated: dict) -> str | None:
@@ -67,6 +73,8 @@ def match_flow(activity: str, participated: dict) -> str | None:
         return None
     hits = []
     for hash_id, entry in participated.items():
+        if not isinstance(hash_id, str) or not _HASH_RX.fullmatch(hash_id):
+            continue
         if not isinstance(entry, dict):
             continue
         title = entry.get("title")
@@ -214,8 +222,15 @@ def build_embed(base: Path) -> discord.Embed:
     # P-M5:抽成纯函数,embed 组装可直测(仿 tests/test_build_embed.py 模式)
     embed = discord.Embed(title="🎰 zFrontier 抽奖中奖记录", color=0xF5A623)
     for slug, display in ACCOUNTS:
-        entries = read_account(base, slug)
-        value = "⚠️ 数据不可读" if entries is None else field_value(entries)
+        # N3:read_account 只兜 (OSError, ValueError) —— 其余异常(如病态嵌套账本在
+        # Py3.12 触发的 RecursionError)会炸穿整条指令,让一个坏账本连累另一个好账号。
+        # 账号隔离必须覆盖整段渲染(read + field_value),不止 json.loads。
+        try:
+            entries = read_account(base, slug)
+            value = "⚠️ 数据不可读" if entries is None else field_value(entries)
+        except Exception:
+            logger.exception("zfwins: %s account render failed", slug)
+            value = "⚠️ 数据不可读"
         embed.add_field(name=display, value=value, inline=False)
     embed.set_footer(text="数据来自每日自动扫描账本")
     return embed

@@ -357,3 +357,78 @@ def test_build_embed_empty_ledger(tmp_path):
         (d / "win_seen.json").write_text("{}", encoding="utf-8")
     emb = build_embed(tmp_path)
     assert [f.value for f in emb.fields] == ["暂无中奖记录", "暂无中奖记录"]
+
+
+# ── Final-review fix wave (N1/N2/N3) ────────────────────────────────────────
+
+# N1:participated 的 key 是唯一「站点来源且进链接 target」的值 —— escape_markdown
+# 保护的是 label,target 里的 `)` 能提前闭合我们自己拼的 markdown 并接上攻击者链接。
+POISON_HASH_KEY = "x) [免费领取ETH](https://evil.example.com"
+
+
+def test_match_flow_rejects_non_hash_charset_key():
+    assert match_flow("【IC】繁花轴", {POISON_HASH_KEY: {"title": "【IC】繁花轴"}}) is None
+
+
+def test_match_flow_poison_key_skipped_not_ambiguous():
+    # 语义锁:坏 key 与坏 entry 同待遇 —— 跳过(而非把整组判成多命中)
+    part = {POISON_HASH_KEY: {"title": "【IC】繁花轴"}, "nnpanoWaVplv": {"title": "【IC】繁花轴"}}
+    assert match_flow("【IC】繁花轴", part) == "nnpanoWaVplv"
+
+
+def test_render_block_never_emits_attacker_link_from_poison_key():
+    wins = build_wins(
+        {"thread:1:2026/1/1 9:00:ab": {"text": SAMPLE_LYN_IC, "ts": 1}},
+        {POISON_HASH_KEY: {"title": "【IC】繁花轴"}},
+    )
+    assert len(wins) == 1 and wins[0].flow_hash is None
+    assert "evil.example.com" not in render_block(wins[0])
+
+
+def test_match_flow_still_accepts_real_hashes():
+    # 回归锁:白名单不得误伤真实 hash(12 位 [A-Za-z0-9])
+    assert match_flow("【GB】御极 YUJI｜Magic& 结 ...", PART) == "yL3BNnWW1nd9"
+    assert match_flow("【IC】繁花轴", PART) == "nnpanoWaVplv"
+    assert match_flow("《芥末萌》个性键帽上新", PART) == "OM99pkwRPGK1"
+
+
+# N2:签名中段是站点 SSR 文本,含 \n 时会往 field 里注入**额外行** ——
+# escape_markdown 挡得住 markdown 却挡不住 emoji/纯文本伪造的「🎉 假中奖」行。
+_NEWLINE_SIG = "thread:1:2026/8/8\n🎉 假中奖:abcdef012345"
+
+
+def test_sig_time_str_normalizes_embedded_newline():
+    out = sig_time_str(_NEWLINE_SIG)
+    assert "\n" not in out
+    assert out == "2026/8/8 🎉 假中奖"
+
+
+def test_sig_time_str_real_signature_unchanged():
+    assert sig_time_str("thread:3265065:2026/8/8 12:05:6b9b0e29a14b") == "2026/8/8 12:05"
+
+
+def test_render_block_poison_signature_stays_one_block():
+    # 端到端:毒签名进 build_wins 后,渲染块行数不得超过正常块(3 行)
+    wins = build_wins({_NEWLINE_SIG: {"text": SAMPLE_LYN_IC, "ts": 1}}, PART)
+    assert len(render_block(wins[0]).splitlines()) == 3
+
+
+def test_build_embed_isolates_per_account_render_failure(tmp_path, monkeypatch):
+    """N3:账号隔离此前只兜 (OSError, ValueError);其它异常(如病态嵌套的
+    RecursionError)会炸穿整条指令,让一个坏账本连累另一个好账本。"""
+    import cogs.zf_lottery as mod
+
+    d = tmp_path / "lyn"; d.mkdir()
+    (d / "win_seen.json").write_text(_json.dumps(WIN_SEEN, ensure_ascii=False), encoding="utf-8")
+    real = mod.read_account
+
+    def boom(base, slug):
+        if slug == "zeus":
+            raise RuntimeError("pathological nesting")
+        return real(base, slug)
+
+    monkeypatch.setattr(mod, "read_account", boom)
+    emb = mod.build_embed(tmp_path)
+    assert [f.name for f in emb.fields] == ["Zeus", "Lyn"]
+    assert emb.fields[0].value == "⚠️ 数据不可读"
+    assert "🎉" in emb.fields[1].value           # 好账号不受连累
