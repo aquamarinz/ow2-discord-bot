@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import discord
+
 logger = logging.getLogger(__name__)
 
 TZ_CN = timezone(timedelta(hours=8))  # 站点显示时间为 UTC+8
@@ -154,3 +156,44 @@ def read_account(base: Path, slug: str) -> list[WinEntry] | None:
     if not isinstance(part_raw, dict):
         part_raw = {}
     return build_wins(win_raw, part_raw)
+
+
+MAX_ENTRIES = 10
+FIELD_LIMIT = 1024
+_NOTE_RESERVE = 24  # 尾注「（仅显示最近 N 条）」预算
+_RAW_CAP = 120
+
+
+def render_block(e: WinEntry) -> str:
+    md = discord.utils.escape_markdown
+    when = f"（{e.time_str}）" if e.time_str else ""
+    if not e.parsed:
+        body = ["ℹ️ 未识别私信", f"　{md(e.raw_text[:_RAW_CAP])}{when}"]
+        links = f"　[去领奖]({MAIL_LIST_URL})"
+    else:
+        body = [f"🎉 {md(e.prize)}", f"　{md(e.activity)}{when}"]
+        if e.flow_hash:
+            links = f"　[抽奖帖]({FLOW_URL_BASE}/{e.flow_hash}) · [去领奖]({MAIL_LIST_URL})"
+        else:
+            links = f"　[去领奖]({MAIL_LIST_URL})"
+    return "\n".join(body + [links])
+
+
+def field_value(entries: list[WinEntry]) -> str:
+    if not entries:
+        return "暂无中奖记录"
+    out: list[str] = []
+    used = 0
+    for e in entries[:MAX_ENTRIES]:
+        block = render_block(e)
+        cost = len(block) + (1 if out else 0)  # 块间换行
+        if used + cost > FIELD_LIMIT - _NOTE_RESERVE:
+            break
+        out.append(block)
+        used += cost
+    if not out:
+        # P-L1:退化保护(首块即超预算,现实上界 524 字符不可达)——硬切防空 field
+        out.append(render_block(entries[0])[: FIELD_LIMIT - _NOTE_RESERVE])
+    if len(out) < len(entries):
+        out.append(f"（仅显示最近 {len(out)} 条）")
+    return "\n".join(out)

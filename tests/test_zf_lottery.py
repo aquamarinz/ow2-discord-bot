@@ -265,3 +265,54 @@ def test_build_wins_oversized_int_ts_clamped():
     raw = _json.loads('{"thread:1:2026/1/1 9:00:ab": {"text": "x", "ts": %s}}' % ("9" * 401))
     wins = build_wins(raw, {})
     assert len(wins) == 1 and wins[0].ts == 0.0
+
+
+from cogs.zf_lottery import MAIL_LIST_URL, field_value, render_block
+
+
+def _entry(**kw):
+    base = dict(parsed=True, prize="奖品X", activity="活动Y", raw_text="raw",
+                time_str="2026/8/8 12:05", ts=1.0, flow_hash="hashZ")
+    base.update(kw)
+    return WinEntry(**base)
+
+
+def test_render_block_full():
+    b = render_block(_entry())
+    assert b.splitlines() == [
+        "🎉 奖品X",
+        "　活动Y（2026/8/8 12:05）",
+        f"　[抽奖帖](https://www.zfrontier.com/app/flow/hashZ) · [去领奖]({MAIL_LIST_URL})",
+    ]
+
+
+def test_render_block_no_flow_and_no_time():
+    b = render_block(_entry(flow_hash=None, time_str=""))
+    assert "抽奖帖" not in b and f"[去领奖]({MAIL_LIST_URL})" in b
+    assert "（" not in b.splitlines()[1]      # 无时间不留空括号
+
+
+def test_render_block_unparsed_neutral_and_capped():
+    b = render_block(_entry(parsed=False, prize="", activity="", raw_text="x" * 300))
+    assert b.startswith("ℹ️ 未识别私信")
+    assert "🎉" not in b and "x" * 121 not in b
+
+
+def test_render_block_escapes_ugc():
+    b = render_block(_entry(prize="*bold* [link]", activity="_it_"))
+    assert "\\*bold\\*" in b and "\\_it\\_" in b
+    # escape 不得破坏我们自己拼的链接 markdown
+    assert f"[去领奖]({MAIL_LIST_URL})" in b
+
+
+def test_field_value_empty():
+    assert field_value([]) == "暂无中奖记录"
+
+
+def test_field_value_1024_whole_entry_truncation():
+    entries = [_entry(prize=f"奖品{i}·" + "很长" * 30) for i in range(10)]
+    v = field_value(entries)
+    assert len(v) <= 1024
+    assert "（仅显示最近" in v
+    # 整条截断:最后一个可见块必须是完整三行块的结尾(链接行),不是半截文本
+    assert v.split("\n（仅显示最近")[0].rstrip().endswith(")")
