@@ -92,7 +92,11 @@ def test_new_campaign_with_progress_announces_once():
     p1 = _payload(_c(drops=[_d()]),
                   _c(cid="c2", name="Day 4", drops=[_d(did="d9", minutes=1)]))
     st1, _, camps = diff_tick(st0, p1)
-    assert camps == [{"campaign": "Day 4", "game": "Overwatch", "drop_count": 1}]
+    assert len(camps) == 1
+    ev = camps[0]
+    assert ev["campaign"] == "Day 4" and ev["game"] == "Overwatch"
+    assert ev["drop_count"] == 1
+    assert ev["id"] == "c2"
     # progress → 0 → back, and transient disappearance → never re-announce
     st2, _, camps2 = diff_tick(st1, _payload(_c(drops=[_d()])))
     assert camps2 == []
@@ -178,3 +182,50 @@ def test_mining_cap_sweeps_absent_entries():
     st = {"drops": {}, "mining": big}
     st1, _, _ = diff_tick(st, _payload(_c(drops=[_d()])))
     assert st1["mining"] == {"c1"}
+
+
+# ── campaign_events enrichment (2026-08-15 spec §3.1 / test 1) ──────
+
+def test_campaign_event_carries_details():
+    st0, _, _ = diff_tick(None, _payload(_c(drops=[_d()])))
+    c2 = _c(cid="c2", name="Day 4", drops=[
+        _d(did="d9", name="Spray", minutes=1),
+        _d(did="d10", name="Icon", minutes=0),
+    ])
+    c2["game_box_art_url"] = "https://cdn.example/box-120x160.jpg"
+    c2["drops"][0]["required_minutes"] = 60
+    c2["drops"][1]["required_minutes"] = 480
+    _, _, camps = diff_tick(st0, _payload(_c(drops=[_d()]), c2))
+    ev = camps[0]
+    assert ev["id"] == "c2"
+    assert ev["box_art_url"] == "https://cdn.example/box-120x160.jpg"
+    assert ev["drops"] == [
+        {"name": "Spray", "required_minutes": 60,
+         "image_url": "https://cdn.example/img.png"},
+        {"name": "Icon", "required_minutes": 480,
+         "image_url": "https://cdn.example/img.png"},
+    ]
+
+
+def test_campaign_event_drops_skip_invalid():
+    st0, _, _ = diff_tick(None, _payload(_c(drops=[_d()])))
+    c2 = _c(cid="c2", drops=[
+        {"name": "no-id", "current_minutes": 5},          # 缺 id → 不进 drops
+        _d(did="d9", name="", minutes=1),                 # falsy name → "?"
+        _d(did="d10", minutes=2),
+    ])
+    c2["drops"][1]["required_minutes"] = "120"            # 非数值 → None
+    c2["drops"][2]["required_minutes"] = -5               # 负数 → None
+    _, _, camps = diff_tick(st0, _payload(_c(drops=[_d()]), c2))
+    ev = camps[0]
+    assert ev["drop_count"] == 2                          # n_valid 口径不变
+    assert [d["name"] for d in ev["drops"]] == ["?", "Esports Loot Box"]
+    assert [d["required_minutes"] for d in ev["drops"]] == [None, None]
+
+
+def test_campaign_event_required_minutes_bool_is_none():
+    st0, _, _ = diff_tick(None, _payload(_c(drops=[_d()])))
+    c2 = _c(cid="c2", drops=[_d(did="d9", minutes=1)])
+    c2["drops"][0]["required_minutes"] = True             # bool 不算数值
+    _, _, camps = diff_tick(st0, _payload(_c(drops=[_d()]), c2))
+    assert camps[0]["drops"][0]["required_minutes"] is None

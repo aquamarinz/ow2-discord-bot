@@ -86,7 +86,9 @@ def diff_tick(
     old state), else (new_state, claim_groups, campaign_events):
       claim_groups:    [{"campaign": str, "drops": [str], "done": bool,
                          "image_url": str | None}]
-      campaign_events: [{"campaign": str, "game": str, "drop_count": int}]
+      campaign_events: [{"id": str, "campaign": str, "game": str,
+                         "drop_count": int, "box_art_url": object,
+                         "drops": [{"name", "required_minutes", "image_url"}]}]
     Both event lists are always [] when state is None (silent baseline).
 
     Semantics (spec §3.1/3.2): claim = seen-unclaimed→claimed transition,
@@ -149,10 +151,28 @@ def diff_tick(
         if c.get("active") and has_progress:
             mining_candidates.add(cid)
             if cid not in prev_mining:
+                event_drops: list[dict] = []
+                for d in drops:
+                    if not isinstance(d, dict):
+                        continue
+                    did = d.get("id")
+                    if not isinstance(did, str) or not did:
+                        continue
+                    rm = d.get("required_minutes")
+                    if isinstance(rm, bool) or not isinstance(rm, (int, float)) or rm < 0:
+                        rm = None
+                    event_drops.append({
+                        "name": d.get("name") or "?",
+                        "required_minutes": rm,
+                        "image_url": _benefit_image_url(d),
+                    })
                 campaign_events.append({
+                    "id": cid,
                     "campaign": c.get("name") or "?",
                     "game": c.get("game_name") or "?",
                     "drop_count": n_valid,
+                    "box_art_url": c.get("game_box_art_url"),
+                    "drops": event_drops,
                 })
 
     merged_drops = {**prev_drops, **cur_drops}
